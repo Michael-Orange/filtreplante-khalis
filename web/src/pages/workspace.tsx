@@ -307,12 +307,12 @@ export function WorkspacePage() {
                           }`}
                         />
                         <div className="flex-1 min-w-0">
-                          <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-gray-500 whitespace-nowrap">
+                              {formatDateShort(wave.transactionDate)}
+                            </span>
                             <span className="font-medium text-sm text-gray-900">
                               {formatCFA(parseFloat(wave.amount))}
-                            </span>
-                            <span className="text-xs text-gray-500">
-                              {formatDateShort(wave.transactionDate)}
                             </span>
                           </div>
                           <div className="text-xs text-gray-500 truncate mt-0.5">
