@@ -406,12 +406,17 @@ function WaveLinkPanel({
     : null;
   const showLinked = link || pendingInvoiceId;
 
-  // Sort invoices: closest amount first, then closest date
+  // Sort invoices: partially reconciled first (orange), then by closest amount
   const sortedInvoices = [...invoices]
     .filter((inv) => inv.reconStatus !== "done")
     .sort((a, b) => {
-      const diffA = Math.abs(a.remainingDue - waveAmount);
-      const diffB = Math.abs(b.remainingDue - waveAmount);
+      // Partial reconciliation first (still has remaining to match)
+      const aPartial = a.reconStatus === "partial" ? 0 : 1;
+      const bPartial = b.reconStatus === "partial" ? 0 : 1;
+      if (aPartial !== bPartial) return aPartial - bPartial;
+      // Then by closest amount match
+      const diffA = Math.abs((a.remainingDue - a.reconciledTotal) - waveAmount);
+      const diffB = Math.abs((b.remainingDue - b.reconciledTotal) - waveAmount);
       return diffA - diffB;
     });
 
@@ -492,14 +497,18 @@ function WaveLinkPanel({
             ) : (
               <div className="space-y-1">
                 {sortedInvoices.map((inv) => {
-                  const diff = Math.abs(inv.remainingDue - waveAmount);
+                  const remaining = inv.remainingDue - inv.reconciledTotal;
+                  const diff = Math.abs(remaining - waveAmount);
                   const isExactMatch = diff < 1;
+                  const isPartial = inv.reconStatus === "partial";
 
                   return (
                     <div
                       key={inv.id}
                       className={`flex items-center justify-between py-2 px-3 rounded-lg border ${
-                        isExactMatch
+                        isPartial
+                          ? "border-orange-200 bg-orange-50"
+                          : isExactMatch
                           ? "border-green-200 bg-green-50"
                           : "border-gray-100 hover:bg-gray-50"
                       }`}
@@ -509,14 +518,24 @@ function WaveLinkPanel({
                           <span className="text-sm font-medium text-gray-900">
                             {inv.supplierName || "—"}
                           </span>
-                          {isExactMatch && (
+                          {isPartial && (
+                            <span className="text-xs bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded font-medium">
+                              Reste {formatCFA(remaining)}
+                            </span>
+                          )}
+                          {isExactMatch && !isPartial && (
                             <span className="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-medium">
                               Montant exact
                             </span>
                           )}
                         </div>
                         <div className="text-xs text-gray-500 mt-0.5">
-                          {formatCFA(inv.remainingDue > 0 ? inv.remainingDue : inv.amount)} · {formatDateShort(inv.invoiceDate)} · {inv.paymentType}
+                          {formatCFA(inv.amount)} · {formatDateShort(inv.invoiceDate)} · {inv.paymentType}
+                          {isPartial && (
+                            <span className="text-orange-500 ml-1">
+                              (rapproché: {formatCFA(inv.reconciledTotal)})
+                            </span>
+                          )}
                         </div>
                       </div>
                       <button
