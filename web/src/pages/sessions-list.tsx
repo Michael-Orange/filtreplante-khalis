@@ -58,6 +58,20 @@ export function SessionsListPage() {
     },
   });
 
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => api.delete(`/api/sessions/${id}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["sessions"] });
+    },
+  });
+
+  const handleDelete = (e: React.MouseEvent, id: string, label: string) => {
+    e.stopPropagation();
+    if (confirm(`Supprimer la session "${label}" et tous ses rapprochements ?`)) {
+      deleteMutation.mutate(id);
+    }
+  };
+
   const handleCreate = () => {
     const month = monthOptions[selectedMonth];
     createMutation.mutate({
@@ -124,24 +138,34 @@ export function SessionsListPage() {
       ) : sessions && sessions.length > 0 ? (
         <div className="space-y-3">
           {sessions.map((s) => (
-            <button
+            <div
               key={s.id}
               onClick={() => navigate(`/sessions/${s.id}`)}
-              className="card w-full text-left hover:border-pine/30 transition-colors"
+              className="card w-full text-left hover:border-pine/30 transition-colors cursor-pointer"
             >
               <div className="flex items-center justify-between mb-1">
                 <span className="font-heading font-medium text-gray-900">
                   {s.label}
                 </span>
-                <span
-                  className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                    s.status === "termine"
-                      ? "bg-green-100 text-green-700"
-                      : "bg-orange-100 text-orange-700"
-                  }`}
-                >
-                  {s.status === "termine" ? "Terminé" : "En cours"}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span
+                    className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                      s.status === "termine"
+                        ? "bg-green-100 text-green-700"
+                        : "bg-orange-100 text-orange-700"
+                    }`}
+                  >
+                    {s.status === "termine" ? "Terminé" : "En cours"}
+                  </span>
+                  <button
+                    onClick={(e) => handleDelete(e, s.id, s.label)}
+                    disabled={deleteMutation.isPending}
+                    className="text-gray-300 hover:text-red-500 transition-colors p-1"
+                    title="Supprimer"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                  </button>
+                </div>
               </div>
               <div className="text-sm text-gray-500">
                 {formatDate(s.dateStart)} — {formatDate(s.dateEnd)}
@@ -150,7 +174,7 @@ export function SessionsListPage() {
                 <span>{s.waveCount} transactions Wave</span>
                 <span>{s.linkCount} factures rapprochées</span>
               </div>
-            </button>
+            </div>
           ))}
         </div>
       ) : (
