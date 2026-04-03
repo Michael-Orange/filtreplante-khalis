@@ -420,19 +420,34 @@ function WaveLinkPanel({
     : null;
   const showLinked = link || pendingInvoiceId;
 
-  // Sort invoices: partially reconciled first (orange), then by closest amount
-  const sortedInvoices = [...invoices]
-    .filter((inv) => inv.reconStatus !== "done")
-    .sort((a, b) => {
-      // Partial reconciliation first (still has remaining to match)
-      const aPartial = a.reconStatus === "partial" ? 0 : 1;
-      const bPartial = b.reconStatus === "partial" ? 0 : 1;
-      if (aPartial !== bPartial) return aPartial - bPartial;
-      // Then by closest amount match
-      const diffA = Math.abs((a.remainingDue - a.reconciledTotal) - waveAmount);
-      const diffB = Math.abs((b.remainingDue - b.reconciledTotal) - waveAmount);
-      return diffA - diffB;
+  // Group invoices by supplier, sorted: partial suppliers first, then closest amount
+  const groupedInvoices = useMemo(() => {
+    const available = invoices.filter((inv) => inv.reconStatus !== "done");
+    const groups: Record<string, { supplierName: string; invoices: InvoiceRow[]; hasPartial: boolean }> = {};
+
+    for (const inv of available) {
+      const key = inv.supplierId || "unknown";
+      if (!groups[key]) {
+        groups[key] = {
+          supplierName: inv.supplierName || "—",
+          invoices: [],
+          hasPartial: false,
+        };
+      }
+      groups[key].invoices.push(inv);
+      if (inv.reconStatus === "partial") groups[key].hasPartial = true;
+    }
+
+    // Sort groups: partial first, then by best amount match within group
+    return Object.values(groups).sort((a, b) => {
+      if (a.hasPartial && !b.hasPartial) return -1;
+      if (!a.hasPartial && b.hasPartial) return 1;
+      // Best match in group
+      const bestA = Math.min(...a.invoices.map((inv) => Math.abs((inv.remainingDue - inv.reconciledTotal) - waveAmount)));
+      const bestB = Math.min(...b.invoices.map((inv) => Math.abs((inv.remainingDue - inv.reconciledTotal) - waveAmount)));
+      return bestA - bestB;
     });
+  }, [invoices, waveAmount]);
 
   return (
     <div className="flex flex-col h-full">
@@ -500,68 +515,85 @@ function WaveLinkPanel({
           </div>
         )}
 
-        {/* Available invoices to link */}
+        {/* Available invoices grouped by supplier */}
         {!showLinked && (
           <div className="px-4 py-3">
             <h4 className="text-xs font-medium text-gray-500 uppercase mb-2">
               Factures disponibles
             </h4>
-            {sortedInvoices.length === 0 ? (
+            {groupedInvoices.length === 0 ? (
               <p className="text-sm text-gray-400">Aucune facture à rapprocher</p>
             ) : (
-              <div className="space-y-1">
-                {sortedInvoices.map((inv) => {
-                  const remaining = inv.remainingDue - inv.reconciledTotal;
-                  const diff = Math.abs(remaining - waveAmount);
-                  const isExactMatch = diff < 1;
-                  const isPartial = inv.reconStatus === "partial";
-
-                  return (
-                    <div
-                      key={inv.id}
-                      className={`flex items-center justify-between py-2 px-3 rounded-lg border ${
-                        isPartial
-                          ? "border-orange-200 bg-orange-50"
-                          : isExactMatch
-                          ? "border-green-200 bg-green-50"
-                          : "border-gray-100 hover:bg-gray-50"
-                      }`}
-                    >
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-medium text-gray-900">
-                            {inv.supplierName || "—"}
-                          </span>
-                          {isPartial && (
-                            <span className="text-xs bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded font-medium">
-                              Reste {formatCFA(remaining)}
-                            </span>
-                          )}
-                          {isExactMatch && !isPartial && (
-                            <span className="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-medium">
-                              Montant exact
-                            </span>
-                          )}
-                        </div>
-                        <div className="text-xs text-gray-500 mt-0.5">
-                          {formatCFA(inv.amount)} · {formatDateShort(inv.invoiceDate)} · {inv.paymentType}
-                          {isPartial && (
-                            <span className="text-orange-500 ml-1">
-                              (rapproché: {formatCFA(inv.reconciledTotal)})
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => linkMutation.mutate(inv.id)}
-                        disabled={linkMutation.isPending}
-                        className="text-xs text-pine font-medium hover:text-pine-hover whitespace-nowrap ml-2"
-                      >
-                        Lier
-                      </button>
+              <div className="space-y-3">
+                {groupedInvoices.map((group) => (
+                  <div key={group.supplierName} className={`rounded-lg border ${group.hasPartial ? "border-orange-200" : "border-gray-200"}`}>
+                    {/* Supplier header */}
+                    <div className={`px-3 py-2 text-sm font-medium rounded-t-lg ${group.hasPartial ? "bg-orange-50 text-orange-800" : "bg-gray-50 text-gray-700"}`}>
+                      {group.supplierName}
+                      <span className="text-xs font-normal ml-2 opacity-70">
+                        ({group.invoices.length} facture{group.invoices.length > 1 ? "s" : ""})
+                      </span>
                     </div>
-                  );
-                })}
+                    {/* Invoices */}
+                    <div className="divide-y divide-gray-100">
+                      {group.invoices
+                        .sort((a, b) => {
+                          // Partials first within group
+                          if (a.reconStatus === "partial" && b.reconStatus !== "partial") return -1;
+                          if (b.reconStatus === "partial" && a.reconStatus !== "partial") return 1;
+                          return new Date(a.invoiceDate).getTime() - new Date(b.invoiceDate).getTime();
+                        })
+                        .map((inv) => {
+                          const remaining = inv.remainingDue - inv.reconciledTotal;
+                          const diff = Math.abs(remaining - waveAmount);
+                          const isExactMatch = diff < 1;
+                          const isPartial = inv.reconStatus === "partial";
+
+                          return (
+                            <div
+                              key={inv.id}
+                              className={`flex items-center justify-between py-2 px-3 ${
+                                isPartial ? "bg-orange-50/50" : isExactMatch ? "bg-green-50/50" : ""
+                              }`}
+                            >
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-sm text-gray-900">
+                                    {formatCFA(inv.amount)}
+                                  </span>
+                                  {isPartial && (
+                                    <span className="text-xs bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded font-medium">
+                                      Reste {formatCFA(remaining)}
+                                    </span>
+                                  )}
+                                  {isExactMatch && !isPartial && (
+                                    <span className="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-medium">
+                                      Montant exact
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-xs text-gray-500 mt-0.5">
+                                  {formatDateShort(inv.invoiceDate)} · {inv.description?.slice(0, 40) || inv.paymentType}
+                                  {isPartial && (
+                                    <span className="text-orange-500 ml-1">
+                                      (rapproché: {formatCFA(inv.reconciledTotal)})
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                              <button
+                                onClick={() => linkMutation.mutate(inv.id)}
+                                disabled={linkMutation.isPending}
+                                className="text-xs text-pine font-medium hover:text-pine-hover whitespace-nowrap ml-2"
+                              >
+                                Lier
+                              </button>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
           </div>
