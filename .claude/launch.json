@@ -1,0 +1,19 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "khalis-api",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 8796,
+      "cwd": "C:/Users/micha/filtreplante/filtreplante-khalis/api"
+    },
+    {
+      "name": "khalis-web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 5182,
+      "cwd": "C:/Users/micha/filtreplante/filtreplante-khalis/web"
+    }
+  ]
+}

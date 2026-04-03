@@ -1,0 +1,43 @@
+name: Deploy Frontend to Cloudflare Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - 'packages/auth/**'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    name: Deploy Frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install auth package
+        run: npm install
+        working-directory: ./packages/auth
+
+      - name: Install dependencies
+        run: npm install
+        working-directory: ./web
+
+      - name: Build
+        run: npm run build
+        working-directory: ./web
+        env:
+          VITE_API_URL: https://filtreplante-khalis.michael-orange09.workers.dev
+          VITE_AUTH_URL: https://auth.filtreplante.com
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy web/dist --project-name=filtreplante-khalis-web --branch=main

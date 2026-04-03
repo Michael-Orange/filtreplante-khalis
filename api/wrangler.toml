@@ -1,0 +1,14 @@
+name = "filtreplante-khalis"
+main = "src/index.ts"
+compatibility_date = "2024-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+[dev]
+port = 8796
+
+[vars]
+NODE_ENV = "production"
+
+# Secrets à configurer via wrangler secret put :
+# - DATABASE_URL
+# - JWT_SECRET

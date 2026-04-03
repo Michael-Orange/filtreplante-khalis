@@ -1,0 +1,15 @@
+{
+  "name": "@filtreplante/auth",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "description": "Package auth partagé pour toutes les apps Filtreplante (CF Workers + React)",
+  "exports": {
+    ".": "./src/index.ts",
+    "./frontend": "./src/frontend/index.ts"
+  },
+  "peerDependencies": {
+    "hono": "^4.0.0",
+    "jose": "^5.0.0"
+  }
+}
