@@ -441,27 +441,30 @@ function WaveLinkPanel({
 
   const showLinked = isLinked || pendingInvoiceId;
 
-  // Group invoices by supplier, sorted: partial suppliers first, then closest amount
+  // Group ALL invoices by supplier. Hide supplier only when ALL its invoices are done.
   const groupedInvoices = useMemo(() => {
-    const available = invoices.filter((inv) => inv.reconStatus !== "done");
-    const groups: Record<string, { supplierName: string; invoices: InvoiceRow[]; hasPartial: boolean }> = {};
+    const groups: Record<string, { supplierName: string; invoices: InvoiceRow[]; hasPartial: boolean; allDone: boolean }> = {};
 
-    for (const inv of available) {
+    for (const inv of invoices) {
       const key = inv.supplierId || "unknown";
       if (!groups[key]) {
-        groups[key] = { supplierName: inv.supplierName || "—", invoices: [], hasPartial: false };
+        groups[key] = { supplierName: inv.supplierName || "—", invoices: [], hasPartial: false, allDone: true };
       }
       groups[key].invoices.push(inv);
       if (inv.reconStatus === "partial") groups[key].hasPartial = true;
+      if (inv.reconStatus !== "done") groups[key].allDone = false;
     }
 
-    return Object.values(groups).sort((a, b) => {
-      if (a.hasPartial && !b.hasPartial) return -1;
-      if (!a.hasPartial && b.hasPartial) return 1;
-      const bestA = Math.min(...a.invoices.map((inv) => Math.abs((inv.remainingDue - inv.reconciledTotal) - waveAmount)));
-      const bestB = Math.min(...b.invoices.map((inv) => Math.abs((inv.remainingDue - inv.reconciledTotal) - waveAmount)));
-      return bestA - bestB;
-    });
+    // Only hide suppliers where every single invoice is fully reconciled
+    return Object.values(groups)
+      .filter((g) => !g.allDone)
+      .sort((a, b) => {
+        if (a.hasPartial && !b.hasPartial) return -1;
+        if (!a.hasPartial && b.hasPartial) return 1;
+        const bestA = Math.min(...a.invoices.filter((i) => i.reconStatus !== "done").map((inv) => Math.abs((inv.remainingDue - inv.reconciledTotal) - waveAmount)));
+        const bestB = Math.min(...b.invoices.filter((i) => i.reconStatus !== "done").map((inv) => Math.abs((inv.remainingDue - inv.reconciledTotal) - waveAmount)));
+        return bestA - bestB;
+      });
   }, [invoices, waveAmount]);
 
   return (
@@ -564,26 +567,42 @@ function WaveLinkPanel({
                     <div className="divide-y divide-gray-100">
                       {group.invoices
                         .sort((a, b) => {
-                          if (a.reconStatus === "partial" && b.reconStatus !== "partial") return -1;
-                          if (b.reconStatus === "partial" && a.reconStatus !== "partial") return 1;
+                          // Partials first, then pending, then done at the bottom
+                          const order = { partial: 0, pending: 1, done: 2 };
+                          const diff = order[a.reconStatus] - order[b.reconStatus];
+                          if (diff !== 0) return diff;
                           return new Date(a.invoiceDate).getTime() - new Date(b.invoiceDate).getTime();
                         })
                         .map((inv) => {
                           const remaining = inv.remainingDue - inv.reconciledTotal;
                           const diff = Math.abs(remaining - waveAmount);
-                          const isExactMatch = diff < 1;
+                          const isExactMatch = diff < 1 && inv.reconStatus !== "done";
                           const isPartial = inv.reconStatus === "partial";
+                          const isDone = inv.reconStatus === "done";
 
                           return (
                             <div
                               key={inv.id}
                               className={`flex items-center justify-between py-2 px-3 ${
-                                isPartial ? "bg-orange-50/50" : isExactMatch ? "bg-green-50/50" : ""
+                                isDone
+                                  ? "bg-green-50/30 opacity-60"
+                                  : isPartial
+                                  ? "bg-orange-50/50"
+                                  : isExactMatch
+                                  ? "bg-green-50/50"
+                                  : ""
                               }`}
                             >
                               <div className="min-w-0 flex-1">
                                 <div className="flex items-center gap-2">
-                                  <span className="text-sm text-gray-900">{formatCFA(inv.amount)}</span>
+                                  <span className={`text-sm ${isDone ? "text-green-600 line-through" : "text-gray-900"}`}>
+                                    {formatCFA(inv.amount)}
+                                  </span>
+                                  {isDone && (
+                                    <span className="text-xs bg-green-100 text-green-600 px-1.5 py-0.5 rounded font-medium">
+                                      Rapproché
+                                    </span>
+                                  )}
                                   {isPartial && (
                                     <span className="text-xs bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded font-medium">
                                       Reste {formatCFA(remaining)}
@@ -602,13 +621,15 @@ function WaveLinkPanel({
                                   )}
                                 </div>
                               </div>
-                              <button
-                                onClick={() => linkMutation.mutate(inv.id)}
-                                disabled={linkMutation.isPending}
-                                className="text-xs text-pine font-medium hover:text-pine-hover whitespace-nowrap ml-2"
-                              >
-                                Lier
-                              </button>
+                              {!isDone && (
+                                <button
+                                  onClick={() => linkMutation.mutate(inv.id)}
+                                  disabled={linkMutation.isPending}
+                                  className="text-xs text-pine font-medium hover:text-pine-hover whitespace-nowrap ml-2"
+                                >
+                                  Lier
+                                </button>
+                              )}
                             </div>
                           );
                         })}
