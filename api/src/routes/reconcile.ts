@@ -1,10 +1,10 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import { eq, and, sql } from "drizzle-orm";
+import { eq, and, sql, isNull } from "drizzle-orm";
 import { createDb } from "../lib/db";
 import { AppError } from "../middleware/error";
 import { reconciliationLinks, waveTransactions } from "../schema/khalis";
-import { invoices, suppliers } from "../schema/facture";
+import { invoices, suppliers, payments } from "../schema/facture";
 import type { Env } from "../types/env";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -16,8 +16,13 @@ const createLinkSchema = z.object({
   cashAmount: z.number().min(0).optional().default(0),
 });
 
-// Create reconciliation link
-// Wave transactions are indivisible: linking a Wave always uses its full amount.
+/**
+ * Create reconciliation link(s).
+ *
+ * Wave logic: when linking a Wave to a facture, the full Wave amount is used.
+ * If the Wave exceeds the invoice's remaining amount, the surplus spills over
+ * to other invoices of the SAME supplier (oldest first), creating multiple links.
+ */
 app.post("/", async (c) => {
   const body = await c.req.json();
   const parsed = createLinkSchema.safeParse(body);
@@ -26,55 +31,169 @@ app.post("/", async (c) => {
   }
 
   const { sessionId, invoiceId, waveTransactionId, cashAmount } = parsed.data;
-
   const db = createDb(c.env.DATABASE_URL);
-  let waveAmount = 0;
 
-  // Validate wave transaction exists, belongs to session, and is not already linked
-  if (waveTransactionId) {
-    const [wave] = await db
-      .select()
-      .from(waveTransactions)
+  // --- Cash-only link (no wave) ---
+  if (!waveTransactionId) {
+    if (cashAmount <= 0) {
+      throw new AppError(400, "Montant espèces requis");
+    }
+    const id = crypto.randomUUID();
+    await db.insert(reconciliationLinks).values({
+      id,
+      sessionId,
+      invoiceId,
+      waveTransactionId: null,
+      waveAmount: "0",
+      cashAmount: cashAmount.toString(),
+    });
+    return c.json({ id, links: 1 }, 201);
+  }
+
+  // --- Wave link with auto-spill ---
+  const [wave] = await db
+    .select()
+    .from(waveTransactions)
+    .where(
+      and(
+        eq(waveTransactions.id, waveTransactionId),
+        eq(waveTransactions.sessionId, sessionId)
+      )
+    );
+
+  if (!wave) throw new AppError(404, "Transaction Wave introuvable");
+
+  // Check wave is not already linked
+  const [existing] = await db
+    .select({ id: reconciliationLinks.id })
+    .from(reconciliationLinks)
+    .where(eq(reconciliationLinks.waveTransactionId, waveTransactionId));
+
+  if (existing) {
+    throw new AppError(
+      400,
+      "Cette transaction Wave est déjà liée à une facture."
+    );
+  }
+
+  const waveTotal = parseFloat(wave.amount);
+
+  // Get the target invoice to find its supplier
+  const [targetInvoice] = await db
+    .select({
+      id: invoices.id,
+      supplierId: invoices.supplierId,
+      amountDisplayTTC: invoices.amountDisplayTTC,
+    })
+    .from(invoices)
+    .where(eq(invoices.id, invoiceId));
+
+  if (!targetInvoice) throw new AppError(404, "Facture introuvable");
+
+  // Helper: compute remaining for an invoice (amount - paid in facture - reconciled in this session)
+  async function getRemaining(invId: string, amount: number): Promise<number> {
+    // Payments from facture app
+    const [paidResult] = await db
+      .select({
+        total: sql<string>`COALESCE(SUM(CAST(${payments.amountPaid} AS DECIMAL)), 0)`,
+      })
+      .from(payments)
+      .where(eq(payments.invoiceId, invId));
+    const paidInFacture = parseFloat(paidResult.total);
+
+    // Already reconciled in this session
+    const [reconResult] = await db
+      .select({
+        total: sql<string>`COALESCE(SUM(CAST(${reconciliationLinks.waveAmount} AS DECIMAL) + CAST(${reconciliationLinks.cashAmount} AS DECIMAL)), 0)`,
+      })
+      .from(reconciliationLinks)
       .where(
         and(
-          eq(waveTransactions.id, waveTransactionId),
-          eq(waveTransactions.sessionId, sessionId)
+          eq(reconciliationLinks.sessionId, sessionId),
+          eq(reconciliationLinks.invoiceId, invId)
         )
       );
+    const reconTotal = parseFloat(reconResult.total);
 
-    if (!wave) throw new AppError(404, "Transaction Wave introuvable");
+    return Math.max(0, amount - paidInFacture - reconTotal);
+  }
 
-    // Wave is indivisible: check it's not already linked to any invoice
-    const [existing] = await db
-      .select({ id: reconciliationLinks.id })
-      .from(reconciliationLinks)
-      .where(eq(reconciliationLinks.waveTransactionId, waveTransactionId));
+  // Get remaining for target invoice
+  const targetRemaining = await getRemaining(
+    targetInvoice.id,
+    parseFloat(targetInvoice.amountDisplayTTC)
+  );
 
-    if (existing) {
-      throw new AppError(
-        400,
-        "Cette transaction Wave est déjà liée à une facture. Une transaction Wave est indivisible."
+  const createdLinks: string[] = [];
+  let remaining = waveTotal;
+
+  // Link to target invoice first
+  const targetAlloc = Math.min(remaining, targetRemaining);
+  if (targetAlloc > 0) {
+    const id = crypto.randomUUID();
+    await db.insert(reconciliationLinks).values({
+      id,
+      sessionId,
+      invoiceId: targetInvoice.id,
+      waveTransactionId,
+      waveAmount: targetAlloc.toString(),
+      cashAmount: "0",
+    });
+    createdLinks.push(id);
+    remaining -= targetAlloc;
+  }
+
+  // If surplus, spill over to other invoices of the same supplier
+  if (remaining > 0.01) {
+    const sameSupplierInvoices = await db
+      .select({
+        id: invoices.id,
+        amountDisplayTTC: invoices.amountDisplayTTC,
+        invoiceDate: invoices.invoiceDate,
+      })
+      .from(invoices)
+      .where(
+        and(
+          eq(invoices.userName, "Fatou"),
+          eq(invoices.supplierId, targetInvoice.supplierId),
+          isNull(invoices.archive),
+          sql`${invoices.id} != ${targetInvoice.id}`
+        )
+      )
+      .orderBy(invoices.invoiceDate);
+
+    for (const inv of sameSupplierInvoices) {
+      if (remaining <= 0.01) break;
+
+      const invRemaining = await getRemaining(
+        inv.id,
+        parseFloat(inv.amountDisplayTTC)
       );
+      if (invRemaining <= 0) continue;
+
+      const alloc = Math.min(remaining, invRemaining);
+      const id = crypto.randomUUID();
+      await db.insert(reconciliationLinks).values({
+        id,
+        sessionId,
+        invoiceId: inv.id,
+        waveTransactionId,
+        waveAmount: alloc.toString(),
+        cashAmount: "0",
+      });
+      createdLinks.push(id);
+      remaining -= alloc;
     }
-
-    waveAmount = parseFloat(wave.amount);
   }
 
-  if (waveAmount === 0 && cashAmount === 0) {
-    throw new AppError(400, "Transaction Wave ou montant espèces requis");
-  }
-
-  const id = crypto.randomUUID();
-  await db.insert(reconciliationLinks).values({
-    id,
-    sessionId,
-    invoiceId,
-    waveTransactionId: waveTransactionId || null,
-    waveAmount: waveAmount.toString(),
-    cashAmount: cashAmount.toString(),
-  });
-
-  return c.json({ id }, 201);
+  return c.json(
+    {
+      id: createdLinks[0],
+      links: createdLinks.length,
+      surplus: remaining > 0.01 ? Math.round(remaining) : 0,
+    },
+    201
+  );
 });
 
 // Get ALL reconciliation links for a session (single query)
@@ -138,7 +257,19 @@ app.get("/:sessionId/:invoiceId", async (c) => {
   return c.json(links);
 });
 
-// Delete reconciliation link
+// Delete all links for a wave transaction (unlinking a wave removes all its spill-over links)
+app.delete("/wave/:waveTransactionId", async (c) => {
+  const db = createDb(c.env.DATABASE_URL);
+  const waveTransactionId = c.req.param("waveTransactionId");
+
+  await db
+    .delete(reconciliationLinks)
+    .where(eq(reconciliationLinks.waveTransactionId, waveTransactionId));
+
+  return c.json({ success: true });
+});
+
+// Delete a single reconciliation link
 app.delete("/:linkId", async (c) => {
   const db = createDb(c.env.DATABASE_URL);
   const linkId = c.req.param("linkId");

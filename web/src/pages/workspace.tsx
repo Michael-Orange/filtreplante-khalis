@@ -108,31 +108,34 @@ export function WorkspacePage() {
   const hasWaves = session && session.waveTransactions.length > 0;
   const dataReady = hasWaves && !linksLoading && !!allLinks;
 
-  // Build a map: waveId -> linked invoice info
-  const waveToLink = useMemo(() => {
-    const map: Record<string, { linkId: string; invoiceId: string; waveAmount: number }> = {};
+  // Build a map: waveId -> array of linked invoices (1 Wave can cover N invoices of same supplier)
+  const waveToLinks = useMemo(() => {
+    const map: Record<string, { linkId: string; invoiceId: string; waveAmount: number }[]> = {};
     if (allLinks) {
       for (const link of allLinks) {
         if (link.waveTransactionId) {
-          map[link.waveTransactionId] = {
+          if (!map[link.waveTransactionId]) map[link.waveTransactionId] = [];
+          map[link.waveTransactionId].push({
             linkId: link.id,
             invoiceId: link.invoiceId,
             waveAmount: parseFloat(link.waveAmount),
-          };
+          });
         }
       }
     }
     return map;
   }, [allLinks]);
 
-  // Filter waves
+  // Filter and sort waves by date
   const filteredWaves = useMemo(() => {
     if (!session) return [];
-    const waves = [...session.waveTransactions];
-    if (waveFilter === "linked") return waves.filter((w) => waveToLink[w.id]);
-    if (waveFilter === "unlinked") return waves.filter((w) => !waveToLink[w.id]);
+    let waves = [...session.waveTransactions];
+    if (waveFilter === "linked") waves = waves.filter((w) => waveToLinks[w.id]);
+    if (waveFilter === "unlinked") waves = waves.filter((w) => !waveToLinks[w.id]);
+    // Always sort by date
+    waves.sort((a, b) => new Date(a.transactionDate).getTime() - new Date(b.transactionDate).getTime());
     return waves;
-  }, [session, waveFilter, waveToLink]);
+  }, [session, waveFilter, waveToLinks]);
 
   const selectedWave = session?.waveTransactions.find((w) => w.id === selectedWaveId);
 
@@ -177,7 +180,7 @@ export function WorkspacePage() {
     );
   }
 
-  const linkedCount = Object.keys(waveToLink).length;
+  const linkedCount = Object.keys(waveToLinks).length;
   const totalWaves = session.waveTransactions.length;
 
   return (
@@ -263,16 +266,13 @@ export function WorkspacePage() {
               ) : (
                 <div className="divide-y">
                   {filteredWaves.map((wave) => {
-                    const link = waveToLink[wave.id];
-                    const linkedInvoice = link
-                      ? invoices?.find((inv) => inv.id === link.invoiceId)
-                      : null;
-                    const isLinked = !!link;
+                    const wLinks = waveToLinks[wave.id] || [];
+                    const isLinked = wLinks.length > 0;
+                    const totalAllocated = wLinks.reduce((s, l) => s + l.waveAmount, 0);
 
-                    // Check if wave has unused credit (wave > invoice amount)
+                    // Check if wave has unused credit (allocated < wave amount)
                     const waveAmt = parseFloat(wave.amount);
-                    const linkedAmt = linkedInvoice ? linkedInvoice.amount : 0;
-                    const hasUnusedCredit = isLinked && waveAmt > linkedAmt + 1;
+                    const hasUnusedCredit = isLinked && waveAmt > totalAllocated + 1;
 
                     return (
                       <button
@@ -300,12 +300,12 @@ export function WorkspacePage() {
                           <div className="text-xs text-gray-500 truncate mt-0.5">
                             {wave.counterpartyName || "—"}
                           </div>
-                          {linkedInvoice && (
+                          {isLinked && (
                             <div className={`text-xs mt-1 truncate ${hasUnusedCredit ? "text-orange-500" : "text-green-600"}`}>
-                              → {linkedInvoice.supplierName} · {formatCFA(linkedInvoice.amount)}
+                              → {wLinks.length} facture{wLinks.length > 1 ? "s" : ""} · {formatCFA(totalAllocated)}
                               {hasUnusedCredit && (
                                 <span className="ml-1 font-medium">
-                                  (surplus: {formatCFA(waveAmt - linkedAmt)})
+                                  (surplus: {formatCFA(waveAmt - totalAllocated)})
                                 </span>
                               )}
                             </div>
@@ -330,7 +330,7 @@ export function WorkspacePage() {
                 wave={selectedWave}
                 sessionId={sessionId}
                 invoices={invoices || []}
-                link={waveToLink[selectedWave.id]}
+                links={waveToLinks[selectedWave.id] || []}
                 onBack={() => setSelectedWaveId(null)}
                 onChanged={invalidateAll}
               />
@@ -373,19 +373,21 @@ function WaveLinkPanel({
   wave,
   sessionId,
   invoices,
-  link,
+  links,
   onBack,
   onChanged,
 }: {
   wave: WaveTransaction;
   sessionId: string;
   invoices: InvoiceRow[];
-  link?: { linkId: string; invoiceId: string; waveAmount: number };
+  links: { linkId: string; invoiceId: string; waveAmount: number }[];
   onBack: () => void;
   onChanged: () => void;
 }) {
-  const queryClient = useQueryClient();
   const waveAmount = parseFloat(wave.amount);
+  const totalAllocated = links.reduce((s, l) => s + l.waveAmount, 0);
+  const isLinked = links.length > 0;
+  const surplus = waveAmount - totalAllocated;
 
   const [pendingInvoiceId, setPendingInvoiceId] = useState<string | null>(null);
 
@@ -397,32 +399,21 @@ function WaveLinkPanel({
         waveTransactionId: wave.id,
         cashAmount: 0,
       }),
-    onMutate: (invoiceId) => {
-      setPendingInvoiceId(invoiceId);
-    },
+    onMutate: (invoiceId) => setPendingInvoiceId(invoiceId),
     onSuccess: () => {
       setPendingInvoiceId(null);
       onChanged();
     },
-    onError: () => {
-      setPendingInvoiceId(null);
-    },
+    onError: () => setPendingInvoiceId(null),
   });
 
+  // Unlink ALL links for this wave (cascade)
   const unlinkMutation = useMutation({
-    mutationFn: (linkId: string) => api.delete(`/api/reconcile/${linkId}`),
+    mutationFn: () => api.delete(`/api/reconcile/wave/${wave.id}`),
     onSuccess: () => onChanged(),
   });
 
-  const linkedInvoice = link
-    ? invoices.find((inv) => inv.id === link.invoiceId)
-    : null;
-
-  // Show optimistic linked state
-  const optimisticInvoice = pendingInvoiceId
-    ? invoices.find((inv) => inv.id === pendingInvoiceId)
-    : null;
-  const showLinked = link || pendingInvoiceId;
+  const showLinked = isLinked || pendingInvoiceId;
 
   // Group invoices by supplier, sorted: partial suppliers first, then closest amount
   const groupedInvoices = useMemo(() => {
@@ -432,21 +423,15 @@ function WaveLinkPanel({
     for (const inv of available) {
       const key = inv.supplierId || "unknown";
       if (!groups[key]) {
-        groups[key] = {
-          supplierName: inv.supplierName || "—",
-          invoices: [],
-          hasPartial: false,
-        };
+        groups[key] = { supplierName: inv.supplierName || "—", invoices: [], hasPartial: false };
       }
       groups[key].invoices.push(inv);
       if (inv.reconStatus === "partial") groups[key].hasPartial = true;
     }
 
-    // Sort groups: partial first, then by best amount match within group
     return Object.values(groups).sort((a, b) => {
       if (a.hasPartial && !b.hasPartial) return -1;
       if (!a.hasPartial && b.hasPartial) return 1;
-      // Best match in group
       const bestA = Math.min(...a.invoices.map((inv) => Math.abs((inv.remainingDue - inv.reconciledTotal) - waveAmount)));
       const bestB = Math.min(...b.invoices.map((inv) => Math.abs((inv.remainingDue - inv.reconciledTotal) - waveAmount)));
       return bestA - bestB;
@@ -458,54 +443,66 @@ function WaveLinkPanel({
       {/* Wave header */}
       <div className="bg-white border-b px-4 py-3 flex-shrink-0">
         <div className="flex items-center gap-2 mb-2">
-          <button
-            onClick={onBack}
-            className="lg:hidden text-gray-400 hover:text-gray-600"
-          >
-            &larr;
-          </button>
-          <h3 className="font-heading font-semibold text-gray-900">
-            {formatCFA(waveAmount)}
-          </h3>
+          <button onClick={onBack} className="lg:hidden text-gray-400 hover:text-gray-600">&larr;</button>
+          <h3 className="font-heading font-semibold text-gray-900">{formatCFA(waveAmount)}</h3>
         </div>
         <div className="text-sm text-gray-500">
           <div>{formatDate(wave.transactionDate)}</div>
-          {wave.counterpartyName && (
-            <div className="mt-0.5">Bénéficiaire : {wave.counterpartyName}</div>
-          )}
-          {wave.counterpartyMobile && (
-            <div className="text-xs text-gray-400">{wave.counterpartyMobile}</div>
-          )}
+          {wave.counterpartyName && <div className="mt-0.5">Bénéficiaire : {wave.counterpartyName}</div>}
+          {wave.counterpartyMobile && <div className="text-xs text-gray-400">{wave.counterpartyMobile}</div>}
         </div>
       </div>
 
       <div className="flex-1 overflow-y-auto">
-        {/* Currently linked invoice (real or optimistic) */}
-        {showLinked && (linkedInvoice || optimisticInvoice) && (
+        {/* Linked invoices */}
+        {isLinked && (
           <div className="px-4 py-3 border-b">
-            <h4 className="text-xs font-medium text-gray-500 uppercase mb-2">
-              Facture liée
-            </h4>
-            <div className={`flex items-center justify-between rounded-lg px-3 py-2 ${pendingInvoiceId ? "bg-green-50/60" : "bg-green-50"}`}>
-              <div className="text-sm">
-                <div className="text-green-700 font-medium">
-                  {(linkedInvoice || optimisticInvoice)!.supplierName} · {formatCFA((linkedInvoice || optimisticInvoice)!.amount)}
-                </div>
-                <div className="text-green-500 text-xs">
-                  {formatDateShort((linkedInvoice || optimisticInvoice)!.invoiceDate)} · {(linkedInvoice || optimisticInvoice)!.paymentType}
-                </div>
+            <div className="flex items-center justify-between mb-2">
+              <h4 className="text-xs font-medium text-gray-500 uppercase">
+                Facture{links.length > 1 ? "s" : ""} liée{links.length > 1 ? "s" : ""} ({links.length})
+              </h4>
+              <button
+                onClick={() => unlinkMutation.mutate()}
+                disabled={unlinkMutation.isPending}
+                className="text-red-400 hover:text-red-600 text-xs font-medium"
+              >
+                Tout délier
+              </button>
+            </div>
+            <div className="space-y-1.5">
+              {links.map((link) => {
+                const inv = invoices.find((i) => i.id === link.invoiceId);
+                return (
+                  <div key={link.linkId} className="bg-green-50 rounded-lg px-3 py-2 text-sm">
+                    <div className="text-green-700 font-medium">
+                      {inv?.supplierName || "—"} · {formatCFA(link.waveAmount)}
+                    </div>
+                    <div className="text-green-500 text-xs">
+                      {inv ? `${formatDateShort(inv.invoiceDate)} · ${inv.description?.slice(0, 40) || inv.paymentType}` : ""}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            {surplus > 1 && (
+              <div className="mt-2 text-xs text-orange-600 font-medium">
+                Surplus non affecté : {formatCFA(surplus)}
               </div>
-              {link ? (
-                <button
-                  onClick={() => unlinkMutation.mutate(link.linkId)}
-                  disabled={unlinkMutation.isPending}
-                  className="text-red-400 hover:text-red-600 text-xs font-medium"
-                >
-                  Délier
-                </button>
-              ) : (
-                <span className="text-xs text-green-500">Enregistrement...</span>
-              )}
+            )}
+            {surplus <= 1 && (
+              <div className="mt-3 text-center">
+                <div className="text-green-500 text-2xl mb-1">✓</div>
+                <p className="text-green-700 text-sm font-medium">Transaction entièrement affectée</p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Optimistic pending */}
+        {pendingInvoiceId && !isLinked && (
+          <div className="px-4 py-3 border-b">
+            <div className="bg-green-50/60 rounded-lg px-3 py-2 text-sm text-green-600">
+              Enregistrement...
             </div>
           </div>
         )}
@@ -513,36 +510,32 @@ function WaveLinkPanel({
         {/* Error message */}
         {linkMutation.isError && (
           <div className="px-4 py-2 bg-red-50 border-b">
-            <p className="text-red-600 text-sm">
-              {(linkMutation.error as any)?.message || "Erreur"}
-            </p>
+            <p className="text-red-600 text-sm">{(linkMutation.error as any)?.message || "Erreur"}</p>
           </div>
         )}
 
         {/* Available invoices grouped by supplier */}
         {!showLinked && (
           <div className="px-4 py-3">
-            <h4 className="text-xs font-medium text-gray-500 uppercase mb-2">
-              Factures disponibles
-            </h4>
+            <h4 className="text-xs font-medium text-gray-500 uppercase mb-2">Factures disponibles</h4>
+            <p className="text-xs text-gray-400 mb-3">
+              Le paiement Wave sera automatiquement réparti sur les factures du même fournisseur si le montant dépasse.
+            </p>
             {groupedInvoices.length === 0 ? (
               <p className="text-sm text-gray-400">Aucune facture à rapprocher</p>
             ) : (
               <div className="space-y-3">
                 {groupedInvoices.map((group) => (
                   <div key={group.supplierName} className={`rounded-lg border ${group.hasPartial ? "border-orange-200" : "border-gray-200"}`}>
-                    {/* Supplier header */}
                     <div className={`px-3 py-2 text-sm font-medium rounded-t-lg ${group.hasPartial ? "bg-orange-50 text-orange-800" : "bg-gray-50 text-gray-700"}`}>
                       {group.supplierName}
                       <span className="text-xs font-normal ml-2 opacity-70">
                         ({group.invoices.length} facture{group.invoices.length > 1 ? "s" : ""})
                       </span>
                     </div>
-                    {/* Invoices */}
                     <div className="divide-y divide-gray-100">
                       {group.invoices
                         .sort((a, b) => {
-                          // Partials first within group
                           if (a.reconStatus === "partial" && b.reconStatus !== "partial") return -1;
                           if (b.reconStatus === "partial" && a.reconStatus !== "partial") return 1;
                           return new Date(a.invoiceDate).getTime() - new Date(b.invoiceDate).getTime();
@@ -562,9 +555,7 @@ function WaveLinkPanel({
                             >
                               <div className="min-w-0 flex-1">
                                 <div className="flex items-center gap-2">
-                                  <span className="text-sm text-gray-900">
-                                    {formatCFA(inv.amount)}
-                                  </span>
+                                  <span className="text-sm text-gray-900">{formatCFA(inv.amount)}</span>
                                   {isPartial && (
                                     <span className="text-xs bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded font-medium">
                                       Reste {formatCFA(remaining)}
@@ -579,9 +570,7 @@ function WaveLinkPanel({
                                 <div className="text-xs text-gray-500 mt-0.5">
                                   {formatDateShort(inv.invoiceDate)} · {inv.description?.slice(0, 40) || inv.paymentType}
                                   {isPartial && (
-                                    <span className="text-orange-500 ml-1">
-                                      (rapproché: {formatCFA(inv.reconciledTotal)})
-                                    </span>
+                                    <span className="text-orange-500 ml-1">(rapproché: {formatCFA(inv.reconciledTotal)})</span>
                                   )}
                                 </div>
                               </div>
@@ -600,14 +589,6 @@ function WaveLinkPanel({
                 ))}
               </div>
             )}
-          </div>
-        )}
-
-        {/* Linked confirmation */}
-        {showLinked && (
-          <div className="px-4 py-8 text-center">
-            <div className="text-green-500 text-3xl mb-2">✓</div>
-            <p className="text-green-700 font-medium">Transaction rapprochée</p>
           </div>
         )}
       </div>
