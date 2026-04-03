@@ -4,7 +4,6 @@ import { useParams, useLocation } from "wouter";
 import { api } from "../lib/api";
 import { formatCFA, formatDate, formatDateShort } from "../lib/format";
 import { CsvUpload } from "../components/csv-upload";
-import { ReconciliationPanel } from "../components/reconciliation-panel";
 import { SummaryBar } from "../components/summary-bar";
 
 interface SessionDetail {
@@ -48,6 +47,17 @@ interface InvoiceRow {
   reconStatus: "done" | "partial" | "pending";
 }
 
+interface ReconciliationLink {
+  id: string;
+  invoiceId: string;
+  waveTransactionId: string | null;
+  waveAmount: string;
+  cashAmount: string;
+  waveDate: string | null;
+  waveTotal: string | null;
+  waveCounterparty: string | null;
+}
+
 interface Summary {
   totalWaveImported: number;
   totalWaveCount: number;
@@ -59,22 +69,23 @@ interface Summary {
   orphanWaveTotal: number;
 }
 
-type FilterType = "all" | "pending" | "partial" | "done";
+type WaveFilter = "all" | "linked" | "unlinked";
 
 export function WorkspacePage() {
   const params = useParams<{ id: string }>();
   const [, navigate] = useLocation();
   const sessionId = params.id!;
   const queryClient = useQueryClient();
-  const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(null);
-  const [filter, setFilter] = useState<FilterType>("all");
+  const [selectedWaveId, setSelectedWaveId] = useState<string | null>(null);
+  const [waveFilter, setWaveFilter] = useState<WaveFilter>("all");
+  const [showCashSection, setShowCashSection] = useState(false);
 
   const { data: session, isLoading: sessionLoading } = useQuery({
     queryKey: ["session", sessionId],
     queryFn: () => api.get<SessionDetail>(`/api/sessions/${sessionId}`),
   });
 
-  const { data: invoices, isLoading: invoicesLoading } = useQuery({
+  const { data: invoices } = useQuery({
     queryKey: ["invoices", sessionId],
     queryFn: () => api.get<InvoiceRow[]>(`/api/invoices/${sessionId}`),
     enabled: !!session,
@@ -86,25 +97,79 @@ export function WorkspacePage() {
     enabled: !!session,
   });
 
-  const autoMatchMutation = useMutation({
-    mutationFn: () =>
-      api.post<{ suggestions: any[] }>(`/api/auto-match/${sessionId}`),
+  // All reconciliation links for this session (to know which waves are linked)
+  const { data: allLinks } = useQuery({
+    queryKey: ["allLinks", sessionId],
+    queryFn: async () => {
+      // Get links for all invoices — we query per invoice then merge
+      if (!invoices) return [];
+      const results: ReconciliationLink[] = [];
+      for (const inv of invoices) {
+        const links = await api.get<ReconciliationLink[]>(
+          `/api/reconcile/${sessionId}/${inv.id}`
+        );
+        results.push(...links);
+      }
+      return results;
+    },
+    enabled: !!invoices && invoices.length > 0,
   });
 
   const hasWaves = session && session.waveTransactions.length > 0;
 
-  const filteredInvoices = useMemo(() => {
-    if (!invoices) return [];
-    if (filter === "all") return invoices;
-    return invoices.filter((inv) => inv.reconStatus === filter);
-  }, [invoices, filter]);
+  // Build a map: waveId -> linked invoice info
+  const waveToLink = useMemo(() => {
+    const map: Record<string, { linkId: string; invoiceId: string; waveAmount: number }> = {};
+    if (allLinks) {
+      for (const link of allLinks) {
+        if (link.waveTransactionId) {
+          map[link.waveTransactionId] = {
+            linkId: link.id,
+            invoiceId: link.invoiceId,
+            waveAmount: parseFloat(link.waveAmount),
+          };
+        }
+      }
+    }
+    return map;
+  }, [allLinks]);
 
-  const selectedInvoice = invoices?.find((inv) => inv.id === selectedInvoiceId);
+  // Filter waves
+  const filteredWaves = useMemo(() => {
+    if (!session) return [];
+    const waves = [...session.waveTransactions];
+    if (waveFilter === "linked") return waves.filter((w) => waveToLink[w.id]);
+    if (waveFilter === "unlinked") return waves.filter((w) => !waveToLink[w.id]);
+    return waves;
+  }, [session, waveFilter, waveToLink]);
+
+  const selectedWave = session?.waveTransactions.find((w) => w.id === selectedWaveId);
+
+  // Invoices not yet fully reconciled (available for linking)
+  const availableInvoices = useMemo(() => {
+    if (!invoices) return [];
+    return invoices.filter((inv) => inv.reconStatus !== "done");
+  }, [invoices]);
+
+  // Invoices with cash-only reconciliation (no wave, just espèces)
+  const cashOnlyInvoices = useMemo(() => {
+    if (!invoices) return [];
+    return invoices.filter(
+      (inv) => inv.reconciledCash > 0 && inv.reconciledWave === 0
+    );
+  }, [invoices]);
+
+  // Unreconciled invoices (neither wave nor cash)
+  const unreconciledInvoices = useMemo(() => {
+    if (!invoices) return [];
+    return invoices.filter((inv) => inv.reconStatus === "pending");
+  }, [invoices]);
 
   const invalidateAll = () => {
     queryClient.invalidateQueries({ queryKey: ["invoices", sessionId] });
     queryClient.invalidateQueries({ queryKey: ["summary", sessionId] });
     queryClient.invalidateQueries({ queryKey: ["session", sessionId] });
+    queryClient.invalidateQueries({ queryKey: ["allLinks", sessionId] });
   };
 
   if (sessionLoading) {
@@ -120,6 +185,9 @@ export function WorkspacePage() {
       <div className="text-center py-12 text-gray-400">Session introuvable</div>
     );
   }
+
+  const linkedCount = Object.keys(waveToLink).length;
+  const totalWaves = session.waveTransactions.length;
 
   return (
     <div className="flex flex-col h-[calc(100vh-52px)]">
@@ -141,174 +209,146 @@ export function WorkspacePage() {
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          {hasWaves && (
-            <button
-              onClick={() => autoMatchMutation.mutate()}
-              disabled={autoMatchMutation.isPending}
-              className="btn-secondary text-xs !px-3 !py-1.5 !min-h-0 !rounded-lg"
-            >
-              {autoMatchMutation.isPending ? "..." : "Suggestions auto"}
-            </button>
-          )}
-        </div>
+        {hasWaves && (
+          <button
+            onClick={() => setShowCashSection(!showCashSection)}
+            className="btn-secondary text-xs !px-3 !py-1.5 !min-h-0 !rounded-lg"
+          >
+            {showCashSection ? "Transactions Wave" : "Espèces"}
+          </button>
+        )}
       </div>
-
-      {/* Auto-match suggestions */}
-      {autoMatchMutation.data && autoMatchMutation.data.suggestions.length > 0 && (
-        <AutoMatchBanner
-          suggestions={autoMatchMutation.data.suggestions}
-          sessionId={sessionId}
-          onApplied={invalidateAll}
-        />
-      )}
 
       {/* CSV Upload if no waves yet */}
       {!hasWaves && (
         <CsvUpload sessionId={sessionId} onImported={invalidateAll} />
       )}
 
-      {/* Main content */}
-      {hasWaves && (
+      {/* Main content — Wave-centric view */}
+      {hasWaves && !showCashSection && (
         <div className="flex-1 flex overflow-hidden">
-          {/* Left panel — Invoices */}
+          {/* Left panel — Wave transactions */}
           <div
             className={`${
-              selectedInvoiceId ? "hidden lg:flex" : "flex"
+              selectedWaveId ? "hidden lg:flex" : "flex"
             } flex-col flex-1 lg:max-w-[55%] border-r overflow-hidden`}
           >
             {/* Filter chips */}
             <div className="flex gap-2 px-4 py-2 border-b bg-gray-50 flex-shrink-0">
               {(
                 [
-                  ["all", "Tous"],
-                  ["pending", "A faire"],
-                  ["partial", "Partiels"],
-                  ["done", "OK"],
-                ] as [FilterType, string][]
+                  ["all", `Tous (${totalWaves})`],
+                  ["unlinked", `A faire (${totalWaves - linkedCount})`],
+                  ["linked", `OK (${linkedCount})`],
+                ] as [WaveFilter, string][]
               ).map(([key, label]) => (
                 <button
                   key={key}
-                  onClick={() => setFilter(key)}
+                  onClick={() => setWaveFilter(key)}
                   className={`text-xs px-3 py-1 rounded-full font-medium transition-colors ${
-                    filter === key
+                    waveFilter === key
                       ? "bg-pine text-white"
                       : "bg-white text-gray-600 border hover:border-pine/30"
                   }`}
                 >
                   {label}
-                  {key !== "all" && invoices && (
-                    <span className="ml-1">
-                      ({invoices.filter((inv) => inv.reconStatus === key).length})
-                    </span>
-                  )}
                 </button>
               ))}
             </div>
 
-            {/* Invoice list */}
+            {/* Wave transaction list */}
             <div className="flex-1 overflow-y-auto">
-              {invoicesLoading ? (
-                <div className="flex justify-center py-8">
-                  <div className="w-6 h-6 border-3 border-pine border-t-transparent rounded-full animate-spin" />
-                </div>
-              ) : filteredInvoices.length === 0 ? (
+              {filteredWaves.length === 0 ? (
                 <div className="text-center py-8 text-gray-400 text-sm">
-                  Aucune facture pour ce filtre
+                  Aucune transaction pour ce filtre
                 </div>
               ) : (
                 <div className="divide-y">
-                  {filteredInvoices.map((inv) => (
-                    <button
-                      key={inv.id}
-                      onClick={() => setSelectedInvoiceId(inv.id)}
-                      className={`w-full text-left px-4 py-3 hover:bg-gray-50 transition-colors flex items-center gap-3 ${
-                        selectedInvoiceId === inv.id ? "bg-pine-light" : ""
-                      }`}
-                    >
-                      {/* Status indicator */}
-                      <div
-                        className={`w-1.5 h-10 rounded-full flex-shrink-0 ${
-                          inv.reconStatus === "done"
-                            ? "bg-green-500"
-                            : inv.reconStatus === "partial"
-                            ? "bg-orange-400"
-                            : "bg-gray-300"
+                  {filteredWaves.map((wave) => {
+                    const link = waveToLink[wave.id];
+                    const linkedInvoice = link
+                      ? invoices?.find((inv) => inv.id === link.invoiceId)
+                      : null;
+                    const isLinked = !!link;
+
+                    return (
+                      <button
+                        key={wave.id}
+                        onClick={() => setSelectedWaveId(wave.id)}
+                        className={`w-full text-left px-4 py-3 hover:bg-gray-50 transition-colors flex items-center gap-3 ${
+                          selectedWaveId === wave.id ? "bg-pine-light" : ""
                         }`}
-                      />
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="font-medium text-sm text-gray-900 truncate">
-                            {inv.supplierName || "—"}
-                          </span>
-                          <span className="font-medium text-sm text-gray-900 whitespace-nowrap">
-                            {formatCFA(inv.remainingDue > 0 ? inv.remainingDue : inv.amount)}
-                          </span>
-                        </div>
-                        <div className="flex items-center justify-between gap-2 mt-0.5">
-                          <span className="text-xs text-gray-500 truncate">
-                            {formatDateShort(inv.invoiceDate)} · {inv.paymentType}
-                          </span>
-                          {inv.paidInFacture > 0 && inv.paidInFacture < inv.amount && (
-                            <span className="text-xs text-orange-500">
-                              Reste {formatCFA(inv.remainingDue)}
+                      >
+                        {/* Status indicator */}
+                        <div
+                          className={`w-1.5 h-10 rounded-full flex-shrink-0 ${
+                            isLinked ? "bg-green-500" : "bg-gray-300"
+                          }`}
+                        />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-medium text-sm text-gray-900">
+                              {formatCFA(parseFloat(wave.amount))}
                             </span>
+                            <span className="text-xs text-gray-500">
+                              {formatDateShort(wave.transactionDate)}
+                            </span>
+                          </div>
+                          <div className="text-xs text-gray-500 truncate mt-0.5">
+                            {wave.counterpartyName || "—"}
+                          </div>
+                          {linkedInvoice && (
+                            <div className="text-xs text-green-600 mt-1 truncate">
+                              → {linkedInvoice.supplierName} · {formatCFA(linkedInvoice.amount)}
+                            </div>
                           )}
                         </div>
-                        {inv.reconciledTotal > 0 && (
-                          <div className="mt-1">
-                            <div className="h-1 bg-gray-200 rounded-full overflow-hidden">
-                              <div
-                                className={`h-full rounded-full ${
-                                  inv.reconStatus === "done" ? "bg-green-500" : "bg-orange-400"
-                                }`}
-                                style={{
-                                  width: `${Math.min(100, (inv.reconciledTotal / (inv.remainingDue || inv.amount)) * 100)}%`,
-                                }}
-                              />
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    </button>
-                  ))}
+                      </button>
+                    );
+                  })}
                 </div>
               )}
             </div>
           </div>
 
-          {/* Right panel — Reconciliation */}
+          {/* Right panel — Link invoice to selected wave */}
           <div
             className={`${
-              selectedInvoiceId ? "flex" : "hidden lg:flex"
+              selectedWaveId ? "flex" : "hidden lg:flex"
             } flex-col flex-1 overflow-hidden`}
           >
-            {selectedInvoice ? (
-              <ReconciliationPanel
-                invoice={selectedInvoice}
+            {selectedWave ? (
+              <WaveLinkPanel
+                wave={selectedWave}
                 sessionId={sessionId}
-                waveTransactions={session.waveTransactions}
-                onBack={() => setSelectedInvoiceId(null)}
+                invoices={invoices || []}
+                link={waveToLink[selectedWave.id]}
+                onBack={() => setSelectedWaveId(null)}
                 onChanged={invalidateAll}
               />
             ) : (
               <div className="flex-1 flex items-center justify-center text-gray-400 text-sm">
-                Sélectionnez une facture pour la rapprocher
+                Sélectionnez une transaction Wave
               </div>
             )}
           </div>
         </div>
       )}
 
-      {/* Orphan waves alert */}
-      {summary && summary.orphanWaveCount > 0 && (
-        <div className="bg-red-50 border-t border-red-200 px-4 py-2 flex-shrink-0">
-          <div className="flex items-center gap-2 text-red-700 text-sm font-medium">
-            <span>⚠</span>
-            <span>
-              {summary.orphanWaveCount} transaction{summary.orphanWaveCount > 1 ? "s" : ""} Wave
-              non rapprochée{summary.orphanWaveCount > 1 ? "s" : ""} ({formatCFA(summary.orphanWaveTotal)})
-            </span>
+      {/* Cash section — manage espèces payments */}
+      {hasWaves && showCashSection && (
+        <CashSection
+          invoices={invoices || []}
+          sessionId={sessionId}
+          onChanged={invalidateAll}
+        />
+      )}
+
+      {/* Unreconciled invoices alert */}
+      {unreconciledInvoices.length > 0 && hasWaves && (
+        <div className="bg-orange-50 border-t border-orange-200 px-4 py-2 flex-shrink-0">
+          <div className="text-orange-700 text-sm font-medium">
+            {unreconciledInvoices.length} facture{unreconciledInvoices.length > 1 ? "s" : ""} non rapprochée{unreconciledInvoices.length > 1 ? "s" : ""}
           </div>
         </div>
       )}
@@ -319,87 +359,287 @@ export function WorkspacePage() {
   );
 }
 
-// Auto-match suggestions banner
-function AutoMatchBanner({
-  suggestions,
-  sessionId,
-  onApplied,
-}: {
-  suggestions: any[];
-  sessionId: string;
-  onApplied: () => void;
-}) {
-  const [applied, setApplied] = useState<Set<number>>(new Set());
-  const queryClient = useQueryClient();
+// ─── Wave Link Panel (right side) ─────────────────────────────────
 
-  const applyMutation = useMutation({
-    mutationFn: (suggestion: any) =>
+function WaveLinkPanel({
+  wave,
+  sessionId,
+  invoices,
+  link,
+  onBack,
+  onChanged,
+}: {
+  wave: WaveTransaction;
+  sessionId: string;
+  invoices: InvoiceRow[];
+  link?: { linkId: string; invoiceId: string; waveAmount: number };
+  onBack: () => void;
+  onChanged: () => void;
+}) {
+  const queryClient = useQueryClient();
+  const waveAmount = parseFloat(wave.amount);
+
+  const linkMutation = useMutation({
+    mutationFn: (invoiceId: string) =>
       api.post("/api/reconcile", {
         sessionId,
-        invoiceId: suggestion.invoiceId,
-        waveTransactionId: suggestion.waveTransactionId,
+        invoiceId,
+        waveTransactionId: wave.id,
         cashAmount: 0,
       }),
-    onSuccess: () => {
-      onApplied();
-    },
+    onSuccess: () => onChanged(),
   });
 
-  const handleApply = async (suggestion: any, index: number) => {
-    await applyMutation.mutateAsync(suggestion);
-    setApplied((prev) => new Set(prev).add(index));
-  };
+  const unlinkMutation = useMutation({
+    mutationFn: (linkId: string) => api.delete(`/api/reconcile/${linkId}`),
+    onSuccess: () => onChanged(),
+  });
 
-  const handleApplyAll = async () => {
-    for (let i = 0; i < suggestions.length; i++) {
-      if (!applied.has(i)) {
-        await applyMutation.mutateAsync(suggestions[i]);
-        setApplied((prev) => new Set(prev).add(i));
-      }
-    }
-  };
+  const linkedInvoice = link
+    ? invoices.find((inv) => inv.id === link.invoiceId)
+    : null;
 
-  const remaining = suggestions.filter((_, i) => !applied.has(i));
-  if (remaining.length === 0) return null;
+  // Sort invoices: closest amount first, then closest date
+  const sortedInvoices = [...invoices]
+    .filter((inv) => inv.reconStatus !== "done")
+    .sort((a, b) => {
+      const diffA = Math.abs(a.remainingDue - waveAmount);
+      const diffB = Math.abs(b.remainingDue - waveAmount);
+      return diffA - diffB;
+    });
 
   return (
-    <div className="bg-blue-50 border-b border-blue-200 px-4 py-3 flex-shrink-0">
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-sm font-medium text-blue-800">
-          {remaining.length} suggestion{remaining.length > 1 ? "s" : ""} de rapprochement
-        </span>
-        <button
-          onClick={handleApplyAll}
-          disabled={applyMutation.isPending}
-          className="text-xs bg-blue-600 text-white px-3 py-1 rounded-lg hover:bg-blue-700"
-        >
-          Accepter tout
-        </button>
-      </div>
-      <div className="space-y-1 max-h-32 overflow-y-auto">
-        {suggestions.map((s, i) => (
-          <div
-            key={i}
-            className={`flex items-center justify-between text-xs ${
-              applied.has(i) ? "opacity-40" : ""
-            }`}
+    <div className="flex flex-col h-full">
+      {/* Wave header */}
+      <div className="bg-white border-b px-4 py-3 flex-shrink-0">
+        <div className="flex items-center gap-2 mb-2">
+          <button
+            onClick={onBack}
+            className="lg:hidden text-gray-400 hover:text-gray-600"
           >
-            <span className="text-blue-700">
-              {s.supplierName} · {formatCFA(s.waveAmount)} · {formatDateShort(s.waveDate)}
-              {s.confidence === "high" && " ★"}
-            </span>
-            {!applied.has(i) && (
+            &larr;
+          </button>
+          <h3 className="font-heading font-semibold text-gray-900">
+            {formatCFA(waveAmount)}
+          </h3>
+        </div>
+        <div className="text-sm text-gray-500">
+          <div>{formatDate(wave.transactionDate)}</div>
+          {wave.counterpartyName && (
+            <div className="mt-0.5">Bénéficiaire : {wave.counterpartyName}</div>
+          )}
+          {wave.counterpartyMobile && (
+            <div className="text-xs text-gray-400">{wave.counterpartyMobile}</div>
+          )}
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-y-auto">
+        {/* Currently linked invoice */}
+        {link && linkedInvoice && (
+          <div className="px-4 py-3 border-b">
+            <h4 className="text-xs font-medium text-gray-500 uppercase mb-2">
+              Facture liée
+            </h4>
+            <div className="flex items-center justify-between bg-green-50 rounded-lg px-3 py-2">
+              <div className="text-sm">
+                <div className="text-green-700 font-medium">
+                  {linkedInvoice.supplierName} · {formatCFA(linkedInvoice.amount)}
+                </div>
+                <div className="text-green-500 text-xs">
+                  {formatDateShort(linkedInvoice.invoiceDate)} · {linkedInvoice.paymentType}
+                </div>
+              </div>
               <button
-                onClick={() => handleApply(s, i)}
-                disabled={applyMutation.isPending}
-                className="text-blue-600 hover:text-blue-800 font-medium"
+                onClick={() => unlinkMutation.mutate(link.linkId)}
+                disabled={unlinkMutation.isPending}
+                className="text-red-400 hover:text-red-600 text-xs font-medium"
               >
-                Accepter
+                Délier
               </button>
+            </div>
+          </div>
+        )}
+
+        {/* Error message */}
+        {linkMutation.isError && (
+          <div className="px-4 py-2 bg-red-50 border-b">
+            <p className="text-red-600 text-sm">
+              {(linkMutation.error as any)?.message || "Erreur"}
+            </p>
+          </div>
+        )}
+
+        {/* Available invoices to link */}
+        {!link && (
+          <div className="px-4 py-3">
+            <h4 className="text-xs font-medium text-gray-500 uppercase mb-2">
+              Factures disponibles
+            </h4>
+            {sortedInvoices.length === 0 ? (
+              <p className="text-sm text-gray-400">Aucune facture à rapprocher</p>
+            ) : (
+              <div className="space-y-1">
+                {sortedInvoices.map((inv) => {
+                  const diff = Math.abs(inv.remainingDue - waveAmount);
+                  const isExactMatch = diff < 1;
+
+                  return (
+                    <div
+                      key={inv.id}
+                      className={`flex items-center justify-between py-2 px-3 rounded-lg border ${
+                        isExactMatch
+                          ? "border-green-200 bg-green-50"
+                          : "border-gray-100 hover:bg-gray-50"
+                      }`}
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium text-gray-900">
+                            {inv.supplierName || "—"}
+                          </span>
+                          {isExactMatch && (
+                            <span className="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-medium">
+                              Montant exact
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-xs text-gray-500 mt-0.5">
+                          {formatCFA(inv.remainingDue > 0 ? inv.remainingDue : inv.amount)} · {formatDateShort(inv.invoiceDate)} · {inv.paymentType}
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => linkMutation.mutate(inv.id)}
+                        disabled={linkMutation.isPending}
+                        className="text-xs text-pine font-medium hover:text-pine-hover whitespace-nowrap ml-2"
+                      >
+                        Lier
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
             )}
           </div>
-        ))}
+        )}
+
+        {/* Linked confirmation */}
+        {link && (
+          <div className="px-4 py-8 text-center">
+            <div className="text-green-500 text-3xl mb-2">✓</div>
+            <p className="text-green-700 font-medium">Transaction rapprochée</p>
+          </div>
+        )}
       </div>
+    </div>
+  );
+}
+
+// ─── Cash Section ─────────────────────────────────────────────────
+
+function CashSection({
+  invoices,
+  sessionId,
+  onChanged,
+}: {
+  invoices: InvoiceRow[];
+  sessionId: string;
+  onChanged: () => void;
+}) {
+  const [cashInputs, setCashInputs] = useState<Record<string, string>>({});
+  const queryClient = useQueryClient();
+
+  const linkMutation = useMutation({
+    mutationFn: (data: { invoiceId: string; cashAmount: number }) =>
+      api.post("/api/reconcile", {
+        sessionId,
+        invoiceId: data.invoiceId,
+        cashAmount: data.cashAmount,
+      }),
+    onSuccess: () => onChanged(),
+  });
+
+  const handleAddCash = (invoiceId: string) => {
+    const amount = parseInt(cashInputs[invoiceId] || "0") || 0;
+    if (amount <= 0) return;
+    linkMutation.mutate({ invoiceId, cashAmount: amount });
+    setCashInputs((prev) => ({ ...prev, [invoiceId]: "" }));
+  };
+
+  // Show invoices that still need reconciliation
+  const pendingInvoices = invoices.filter((inv) => inv.reconStatus !== "done");
+
+  return (
+    <div className="flex-1 overflow-y-auto p-4">
+      <h3 className="font-heading font-semibold text-gray-900 mb-3">
+        Paiements espèces
+      </h3>
+      <p className="text-sm text-gray-500 mb-4">
+        Ajoutez les montants payés en espèces pour chaque facture.
+      </p>
+
+      {pendingInvoices.length === 0 ? (
+        <div className="text-center py-8 text-gray-400">
+          Toutes les factures sont rapprochées
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {pendingInvoices.map((inv) => {
+            const toReconcile = inv.remainingDue - inv.reconciledTotal;
+
+            return (
+              <div key={inv.id} className="card">
+                <div className="flex items-center justify-between mb-2">
+                  <div>
+                    <span className="font-medium text-sm text-gray-900">
+                      {inv.supplierName || "—"}
+                    </span>
+                    <span className="text-xs text-gray-500 ml-2">
+                      {formatDateShort(inv.invoiceDate)}
+                    </span>
+                  </div>
+                  <span className="text-sm font-medium">
+                    {formatCFA(inv.amount)}
+                  </span>
+                </div>
+                {inv.reconciledTotal > 0 && (
+                  <div className="text-xs text-gray-500 mb-2">
+                    Déjà rapproché : {formatCFA(inv.reconciledTotal)}
+                    {inv.reconciledWave > 0 && ` (Wave: ${formatCFA(inv.reconciledWave)})`}
+                    {inv.reconciledCash > 0 && ` (Espèces: ${formatCFA(inv.reconciledCash)})`}
+                    {" · "}Reste : {formatCFA(Math.max(0, toReconcile))}
+                  </div>
+                )}
+                {toReconcile > 0 && (
+                  <div className="flex gap-2">
+                    <input
+                      type="number"
+                      value={cashInputs[inv.id] || ""}
+                      onChange={(e) =>
+                        setCashInputs((prev) => ({
+                          ...prev,
+                          [inv.id]: e.target.value,
+                        }))
+                      }
+                      placeholder={`Espèces (reste ${Math.round(toReconcile)})`}
+                      className="input !py-2 flex-1 text-sm"
+                    />
+                    <button
+                      onClick={() => handleAddCash(inv.id)}
+                      disabled={
+                        !cashInputs[inv.id] || linkMutation.isPending
+                      }
+                      className="btn-secondary text-xs !px-3 !py-2 !min-h-0"
+                    >
+                      Ajouter
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
