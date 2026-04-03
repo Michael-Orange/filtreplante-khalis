@@ -118,6 +118,37 @@ app.post("/", async (c) => {
     return Math.max(0, amount - paidInFacture - reconTotal);
   }
 
+  // Get ALL invoices of this supplier to compute total remaining
+  const supplierInvoices = await db
+    .select({
+      id: invoices.id,
+      amountDisplayTTC: invoices.amountDisplayTTC,
+      invoiceDate: invoices.invoiceDate,
+    })
+    .from(invoices)
+    .where(
+      and(
+        eq(invoices.userName, "Fatou"),
+        eq(invoices.supplierId, targetInvoice.supplierId),
+        isNull(invoices.archive)
+      )
+    )
+    .orderBy(invoices.invoiceDate);
+
+  // Compute total remaining for this supplier
+  let totalSupplierRemaining = 0;
+  for (const inv of supplierInvoices) {
+    totalSupplierRemaining += await getRemaining(inv.id, parseFloat(inv.amountDisplayTTC));
+  }
+
+  if (waveTotal > totalSupplierRemaining + 0.01) {
+    const supplierName = (await db.select({ name: suppliers.name }).from(suppliers).where(eq(suppliers.id, targetInvoice.supplierId)))?.[0]?.name || "ce fournisseur";
+    throw new AppError(
+      400,
+      `Transaction Wave (${Math.round(waveTotal)} FCFA) supérieure au total non réglé de ${supplierName} (${Math.round(totalSupplierRemaining)} FCFA). Impossible de lier.`
+    );
+  }
+
   // Get remaining for target invoice
   const targetRemaining = await getRemaining(
     targetInvoice.id,
@@ -145,24 +176,7 @@ app.post("/", async (c) => {
 
   // If surplus, spill over to other invoices of the same supplier
   if (remaining > 0.01) {
-    const sameSupplierInvoices = await db
-      .select({
-        id: invoices.id,
-        amountDisplayTTC: invoices.amountDisplayTTC,
-        invoiceDate: invoices.invoiceDate,
-      })
-      .from(invoices)
-      .where(
-        and(
-          eq(invoices.userName, "Fatou"),
-          eq(invoices.supplierId, targetInvoice.supplierId),
-          isNull(invoices.archive),
-          sql`${invoices.id} != ${targetInvoice.id}`
-        )
-      )
-      .orderBy(invoices.invoiceDate);
-
-    for (const inv of sameSupplierInvoices) {
+    for (const inv of supplierInvoices.filter((i) => i.id !== targetInvoice.id)) {
       if (remaining <= 0.01) break;
 
       const invRemaining = await getRemaining(
