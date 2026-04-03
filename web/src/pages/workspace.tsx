@@ -302,7 +302,7 @@ export function WorkspacePage() {
                       >
                         {/* Status indicator */}
                         <div
-                          className={`w-1.5 h-10 rounded-full flex-shrink-0 ${
+                          className={`w-1.5 self-stretch rounded-full flex-shrink-0 ${
                             hasUnusedCredit ? "bg-orange-400" : isLinked ? "bg-green-500" : "bg-gray-300"
                           }`}
                         />
@@ -319,12 +319,19 @@ export function WorkspacePage() {
                             {wave.counterpartyName || "—"}
                           </div>
                           {isLinked && (
-                            <div className={`text-xs mt-1 truncate ${hasUnusedCredit ? "text-orange-500" : "text-green-600"}`}>
-                              → {wLinks.length} facture{wLinks.length > 1 ? "s" : ""} · {formatCFA(totalAllocated)}
+                            <div className="mt-1 space-y-0.5">
+                              {wLinks.map((link, i) => (
+                                <div key={link.linkId} className={`text-xs truncate ${hasUnusedCredit ? "text-orange-500" : "text-green-600"}`}>
+                                  → {link.supplierName || "—"} · {formatCFA(link.waveAmount)}
+                                  {link.invoiceDate && (
+                                    <span className="opacity-70 ml-1">{formatDateShort(link.invoiceDate)}</span>
+                                  )}
+                                </div>
+                              ))}
                               {hasUnusedCredit && (
-                                <span className="ml-1 font-medium">
-                                  (surplus: {formatCFA(waveAmt - totalAllocated)})
-                                </span>
+                                <div className="text-xs text-orange-500 font-medium">
+                                  Surplus: {formatCFA(waveAmt - totalAllocated)}
+                                </div>
                               )}
                             </div>
                           )}
