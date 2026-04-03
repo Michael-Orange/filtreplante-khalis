@@ -97,22 +97,12 @@ export function WorkspacePage() {
     enabled: !!session,
   });
 
-  // All reconciliation links for this session (to know which waves are linked)
+  // All reconciliation links for this session (single query)
   const { data: allLinks } = useQuery({
     queryKey: ["allLinks", sessionId],
-    queryFn: async () => {
-      // Get links for all invoices — we query per invoice then merge
-      if (!invoices) return [];
-      const results: ReconciliationLink[] = [];
-      for (const inv of invoices) {
-        const links = await api.get<ReconciliationLink[]>(
-          `/api/reconcile/${sessionId}/${inv.id}`
-        );
-        results.push(...links);
-      }
-      return results;
-    },
-    enabled: !!invoices && invoices.length > 0,
+    queryFn: () =>
+      api.get<ReconciliationLink[]>(`/api/reconcile/session/${sessionId}`),
+    enabled: !!session,
   });
 
   const hasWaves = session && session.waveTransactions.length > 0;
@@ -379,6 +369,8 @@ function WaveLinkPanel({
   const queryClient = useQueryClient();
   const waveAmount = parseFloat(wave.amount);
 
+  const [pendingInvoiceId, setPendingInvoiceId] = useState<string | null>(null);
+
   const linkMutation = useMutation({
     mutationFn: (invoiceId: string) =>
       api.post("/api/reconcile", {
@@ -387,7 +379,16 @@ function WaveLinkPanel({
         waveTransactionId: wave.id,
         cashAmount: 0,
       }),
-    onSuccess: () => onChanged(),
+    onMutate: (invoiceId) => {
+      setPendingInvoiceId(invoiceId);
+    },
+    onSuccess: () => {
+      setPendingInvoiceId(null);
+      onChanged();
+    },
+    onError: () => {
+      setPendingInvoiceId(null);
+    },
   });
 
   const unlinkMutation = useMutation({
@@ -398,6 +399,12 @@ function WaveLinkPanel({
   const linkedInvoice = link
     ? invoices.find((inv) => inv.id === link.invoiceId)
     : null;
+
+  // Show optimistic linked state
+  const optimisticInvoice = pendingInvoiceId
+    ? invoices.find((inv) => inv.id === pendingInvoiceId)
+    : null;
+  const showLinked = link || pendingInvoiceId;
 
   // Sort invoices: closest amount first, then closest date
   const sortedInvoices = [...invoices]
@@ -435,28 +442,32 @@ function WaveLinkPanel({
       </div>
 
       <div className="flex-1 overflow-y-auto">
-        {/* Currently linked invoice */}
-        {link && linkedInvoice && (
+        {/* Currently linked invoice (real or optimistic) */}
+        {showLinked && (linkedInvoice || optimisticInvoice) && (
           <div className="px-4 py-3 border-b">
             <h4 className="text-xs font-medium text-gray-500 uppercase mb-2">
               Facture liée
             </h4>
-            <div className="flex items-center justify-between bg-green-50 rounded-lg px-3 py-2">
+            <div className={`flex items-center justify-between rounded-lg px-3 py-2 ${pendingInvoiceId ? "bg-green-50/60" : "bg-green-50"}`}>
               <div className="text-sm">
                 <div className="text-green-700 font-medium">
-                  {linkedInvoice.supplierName} · {formatCFA(linkedInvoice.amount)}
+                  {(linkedInvoice || optimisticInvoice)!.supplierName} · {formatCFA((linkedInvoice || optimisticInvoice)!.amount)}
                 </div>
                 <div className="text-green-500 text-xs">
-                  {formatDateShort(linkedInvoice.invoiceDate)} · {linkedInvoice.paymentType}
+                  {formatDateShort((linkedInvoice || optimisticInvoice)!.invoiceDate)} · {(linkedInvoice || optimisticInvoice)!.paymentType}
                 </div>
               </div>
-              <button
-                onClick={() => unlinkMutation.mutate(link.linkId)}
-                disabled={unlinkMutation.isPending}
-                className="text-red-400 hover:text-red-600 text-xs font-medium"
-              >
-                Délier
-              </button>
+              {link ? (
+                <button
+                  onClick={() => unlinkMutation.mutate(link.linkId)}
+                  disabled={unlinkMutation.isPending}
+                  className="text-red-400 hover:text-red-600 text-xs font-medium"
+                >
+                  Délier
+                </button>
+              ) : (
+                <span className="text-xs text-green-500">Enregistrement...</span>
+              )}
             </div>
           </div>
         )}
@@ -471,7 +482,7 @@ function WaveLinkPanel({
         )}
 
         {/* Available invoices to link */}
-        {!link && (
+        {!showLinked && (
           <div className="px-4 py-3">
             <h4 className="text-xs font-medium text-gray-500 uppercase mb-2">
               Factures disponibles
@@ -524,7 +535,7 @@ function WaveLinkPanel({
         )}
 
         {/* Linked confirmation */}
-        {link && (
+        {showLinked && (
           <div className="px-4 py-8 text-center">
             <div className="text-green-500 text-3xl mb-2">✓</div>
             <p className="text-green-700 font-medium">Transaction rapprochée</p>

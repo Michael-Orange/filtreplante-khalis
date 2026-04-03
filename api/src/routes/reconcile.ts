@@ -111,6 +111,33 @@ app.get("/:sessionId/:invoiceId", async (c) => {
   return c.json(links);
 });
 
+// Get ALL reconciliation links for a session (single query)
+app.get("/session/:sessionId", async (c) => {
+  const db = createDb(c.env.DATABASE_URL);
+  const sessionId = c.req.param("sessionId");
+
+  const links = await db
+    .select({
+      id: reconciliationLinks.id,
+      invoiceId: reconciliationLinks.invoiceId,
+      waveTransactionId: reconciliationLinks.waveTransactionId,
+      waveAmount: reconciliationLinks.waveAmount,
+      cashAmount: reconciliationLinks.cashAmount,
+      createdAt: reconciliationLinks.createdAt,
+      waveDate: waveTransactions.transactionDate,
+      waveTotal: waveTransactions.amount,
+      waveCounterparty: waveTransactions.counterpartyName,
+    })
+    .from(reconciliationLinks)
+    .leftJoin(
+      waveTransactions,
+      eq(reconciliationLinks.waveTransactionId, waveTransactions.id)
+    )
+    .where(eq(reconciliationLinks.sessionId, sessionId));
+
+  return c.json(links);
+});
+
 // Delete reconciliation link
 app.delete("/:linkId", async (c) => {
   const db = createDb(c.env.DATABASE_URL);
