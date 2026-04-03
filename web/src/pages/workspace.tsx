@@ -594,6 +594,7 @@ function WaveLinkPanel({
                     group={group}
                     waveAmount={waveAmount}
                     sessionId={sessionId}
+                    allLinks={allLinks || []}
                     invoiceToLinkIds={invoiceToLinkIds}
                     onLink={(invId) => linkMutation.mutate(invId)}
                     onUnlinkInvoice={(linkIds) => linkIds.forEach((id) => unlinkSingleMutation.mutate(id))}
@@ -617,6 +618,7 @@ function SupplierGroup({
   group,
   waveAmount,
   sessionId,
+  allLinks,
   invoiceToLinkIds,
   onLink,
   onUnlinkInvoice,
@@ -627,6 +629,7 @@ function SupplierGroup({
   group: { supplierName: string; invoices: InvoiceRow[]; hasPartial: boolean; allDone: boolean };
   waveAmount: number;
   sessionId: string;
+  allLinks: ReconciliationLink[];
   invoiceToLinkIds: Record<string, string[]>;
   onLink: (invoiceId: string) => void;
   onUnlinkInvoice: (linkIds: string[]) => void;
@@ -718,12 +721,34 @@ function SupplierGroup({
                     </div>
                     <div className="text-xs text-gray-500 mt-0.5">
                       {formatDateShort(inv.invoiceDate)} · {inv.description?.slice(0, 40) || inv.paymentType}
-                      {isPartial && (
-                        <span className="text-orange-500 ml-1">(rapproché: {formatCFA(inv.reconciledTotal)})</span>
-                      )}
                     </div>
+                    {/* Payment detail for done/partial invoices */}
+                    {(isDone || isPartial) && (() => {
+                      const invLinks = allLinks.filter((l) => l.invoiceId === inv.id);
+                      if (invLinks.length === 0) return null;
+                      return (
+                        <div className="mt-1 space-y-0.5">
+                          {invLinks.map((l) => (
+                            <div key={l.id} className="text-xs">
+                              {parseFloat(l.waveAmount) > 0 && (
+                                <span className="text-blue-600">
+                                  Wave {formatCFA(parseFloat(l.waveAmount))}
+                                  {l.waveDate && <span className="opacity-70"> · {formatDateShort(l.waveDate)}</span>}
+                                  {l.waveCounterparty && <span className="opacity-70"> · {l.waveCounterparty}</span>}
+                                </span>
+                              )}
+                              {parseFloat(l.cashAmount) > 0 && (
+                                <span className="text-amber-600">
+                                  Espèces {formatCFA(parseFloat(l.cashAmount))}
+                                </span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })()}
                   </div>
-                  <div className="flex items-center gap-1 ml-2">
+                  <div className="flex items-center gap-1 ml-2 flex-shrink-0">
                     {!isDone && (
                       <button
                         onClick={() => onLink(inv.id)}
