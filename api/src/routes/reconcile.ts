@@ -77,41 +77,8 @@ app.post("/", async (c) => {
   return c.json({ id }, 201);
 });
 
-// Get reconciliation links for an invoice in a session
-app.get("/:sessionId/:invoiceId", async (c) => {
-  const db = createDb(c.env.DATABASE_URL);
-  const sessionId = c.req.param("sessionId");
-  const invoiceId = c.req.param("invoiceId");
-
-  const links = await db
-    .select({
-      id: reconciliationLinks.id,
-      invoiceId: reconciliationLinks.invoiceId,
-      waveTransactionId: reconciliationLinks.waveTransactionId,
-      waveAmount: reconciliationLinks.waveAmount,
-      cashAmount: reconciliationLinks.cashAmount,
-      createdAt: reconciliationLinks.createdAt,
-      // Wave transaction details
-      waveDate: waveTransactions.transactionDate,
-      waveTotal: waveTransactions.amount,
-      waveCounterparty: waveTransactions.counterpartyName,
-    })
-    .from(reconciliationLinks)
-    .leftJoin(
-      waveTransactions,
-      eq(reconciliationLinks.waveTransactionId, waveTransactions.id)
-    )
-    .where(
-      and(
-        eq(reconciliationLinks.sessionId, sessionId),
-        eq(reconciliationLinks.invoiceId, invoiceId)
-      )
-    );
-
-  return c.json(links);
-});
-
 // Get ALL reconciliation links for a session (single query)
+// MUST be before /:sessionId/:invoiceId to avoid "session" being matched as sessionId
 app.get("/session/:sessionId", async (c) => {
   const db = createDb(c.env.DATABASE_URL);
   const sessionId = c.req.param("sessionId");
@@ -134,6 +101,39 @@ app.get("/session/:sessionId", async (c) => {
       eq(reconciliationLinks.waveTransactionId, waveTransactions.id)
     )
     .where(eq(reconciliationLinks.sessionId, sessionId));
+
+  return c.json(links);
+});
+
+// Get reconciliation links for an invoice in a session
+app.get("/:sessionId/:invoiceId", async (c) => {
+  const db = createDb(c.env.DATABASE_URL);
+  const sessionId = c.req.param("sessionId");
+  const invoiceId = c.req.param("invoiceId");
+
+  const links = await db
+    .select({
+      id: reconciliationLinks.id,
+      invoiceId: reconciliationLinks.invoiceId,
+      waveTransactionId: reconciliationLinks.waveTransactionId,
+      waveAmount: reconciliationLinks.waveAmount,
+      cashAmount: reconciliationLinks.cashAmount,
+      createdAt: reconciliationLinks.createdAt,
+      waveDate: waveTransactions.transactionDate,
+      waveTotal: waveTransactions.amount,
+      waveCounterparty: waveTransactions.counterpartyName,
+    })
+    .from(reconciliationLinks)
+    .leftJoin(
+      waveTransactions,
+      eq(reconciliationLinks.waveTransactionId, waveTransactions.id)
+    )
+    .where(
+      and(
+        eq(reconciliationLinks.sessionId, sessionId),
+        eq(reconciliationLinks.invoiceId, invoiceId)
+      )
+    );
 
   return c.json(links);
 });
