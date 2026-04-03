@@ -41,8 +41,8 @@ export function SessionsListPage() {
   const [, navigate] = useLocation();
   const queryClient = useQueryClient();
   const [showCreate, setShowCreate] = useState(false);
-  const [selectedMonth, setSelectedMonth] = useState(0);
   const monthOptions = getMonthOptions();
+  const [selectedMonth, setSelectedMonth] = useState(1);
 
   const { data: sessions, isLoading } = useQuery({
     queryKey: ["sessions"],

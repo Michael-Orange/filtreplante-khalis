@@ -338,7 +338,6 @@ function AutoMatchBanner({
         sessionId,
         invoiceId: suggestion.invoiceId,
         waveTransactionId: suggestion.waveTransactionId,
-        waveAmount: suggestion.waveAmount,
         cashAmount: 0,
       }),
     onSuccess: () => {

@@ -52,8 +52,6 @@ export function ReconciliationPanel({
   onChanged,
 }: Props) {
   const [cashInput, setCashInput] = useState("");
-  const [linkingWaveId, setLinkingWaveId] = useState<string | null>(null);
-  const [waveAmountInput, setWaveAmountInput] = useState("");
   const queryClient = useQueryClient();
 
   const { data: links } = useQuery({
@@ -67,7 +65,6 @@ export function ReconciliationPanel({
   const linkMutation = useMutation({
     mutationFn: (data: {
       waveTransactionId?: string;
-      waveAmount: number;
       cashAmount: number;
     }) =>
       api.post("/api/reconcile", {
@@ -80,8 +77,6 @@ export function ReconciliationPanel({
         queryKey: ["links", sessionId, invoice.id],
       });
       onChanged();
-      setLinkingWaveId(null);
-      setWaveAmountInput("");
       setCashInput("");
     },
   });
@@ -96,7 +91,7 @@ export function ReconciliationPanel({
     },
   });
 
-  // Calculate what's already used on each wave (from links in this session)
+  // Wave transactions already linked (in any invoice of this session)
   const linkedWaveIds = new Set(
     links?.filter((l) => l.waveTransactionId).map((l) => l.waveTransactionId) || []
   );
@@ -104,23 +99,10 @@ export function ReconciliationPanel({
   const toReconcile =
     invoice.remainingDue - invoice.reconciledTotal;
 
+  // Link a full Wave transaction (indivisible)
   const handleLinkWave = (waveId: string) => {
-    const wave = waveTransactions.find((w) => w.id === waveId);
-    if (!wave) return;
-    setLinkingWaveId(waveId);
-    const waveAmount = parseFloat(wave.amount);
-    // Pre-fill with min(wave amount, remaining to reconcile)
-    const prefill = Math.min(waveAmount, Math.max(0, toReconcile));
-    setWaveAmountInput(Math.round(prefill).toString());
-  };
-
-  const confirmLinkWave = () => {
-    if (!linkingWaveId) return;
-    const amount = parseInt(waveAmountInput) || 0;
-    if (amount <= 0) return;
     linkMutation.mutate({
-      waveTransactionId: linkingWaveId,
-      waveAmount: amount,
+      waveTransactionId: waveId,
       cashAmount: 0,
     });
   };
@@ -128,7 +110,7 @@ export function ReconciliationPanel({
   const handleAddCash = () => {
     const amount = parseInt(cashInput) || 0;
     if (amount <= 0) return;
-    linkMutation.mutate({ waveAmount: 0, cashAmount: amount });
+    linkMutation.mutate({ cashAmount: amount });
   };
 
   return (
@@ -244,36 +226,12 @@ export function ReconciliationPanel({
           </div>
         )}
 
-        {/* Wave linking UI */}
-        {linkingWaveId && (
-          <div className="px-4 py-3 bg-blue-50 border-b">
-            <div className="flex items-center gap-2">
-              <input
-                type="number"
-                value={waveAmountInput}
-                onChange={(e) => setWaveAmountInput(e.target.value)}
-                placeholder="Montant"
-                className="input !py-2 flex-1"
-              />
-              <button
-                onClick={confirmLinkWave}
-                disabled={linkMutation.isPending}
-                className="btn-primary text-sm !px-4 !py-2 !min-h-0"
-              >
-                Lier
-              </button>
-              <button
-                onClick={() => setLinkingWaveId(null)}
-                className="text-gray-400 hover:text-gray-600 text-sm"
-              >
-                Annuler
-              </button>
-            </div>
-            {linkMutation.isError && (
-              <p className="text-red-500 text-xs mt-1">
-                {(linkMutation.error as any)?.message || "Erreur"}
-              </p>
-            )}
+        {/* Error message */}
+        {linkMutation.isError && (
+          <div className="px-4 py-2 bg-red-50 border-b">
+            <p className="text-red-600 text-sm">
+              {(linkMutation.error as any)?.message || "Erreur"}
+            </p>
           </div>
         )}
 
@@ -286,7 +244,6 @@ export function ReconciliationPanel({
             <div className="space-y-1">
               {waveTransactions
                 .sort((a, b) => {
-                  // Sort by date proximity to invoice date
                   const invDate = new Date(invoice.invoiceDate).getTime();
                   const dateA = new Date(a.transactionDate).getTime();
                   const dateB = new Date(b.transactionDate).getTime();
@@ -310,7 +267,7 @@ export function ReconciliationPanel({
                     </div>
                     <button
                       onClick={() => handleLinkWave(wave.id)}
-                      disabled={linkingWaveId === wave.id}
+                      disabled={linkMutation.isPending}
                       className="text-xs text-pine font-medium hover:text-pine-hover whitespace-nowrap ml-2"
                     >
                       Lier
