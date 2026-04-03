@@ -261,6 +261,11 @@ export function WorkspacePage() {
                       : null;
                     const isLinked = !!link;
 
+                    // Check if wave has unused credit (wave > invoice amount)
+                    const waveAmt = parseFloat(wave.amount);
+                    const linkedAmt = linkedInvoice ? linkedInvoice.amount : 0;
+                    const hasUnusedCredit = isLinked && waveAmt > linkedAmt + 1;
+
                     return (
                       <button
                         key={wave.id}
@@ -272,7 +277,7 @@ export function WorkspacePage() {
                         {/* Status indicator */}
                         <div
                           className={`w-1.5 h-10 rounded-full flex-shrink-0 ${
-                            isLinked ? "bg-green-500" : "bg-gray-300"
+                            hasUnusedCredit ? "bg-orange-400" : isLinked ? "bg-green-500" : "bg-gray-300"
                           }`}
                         />
                         <div className="flex-1 min-w-0">
@@ -288,8 +293,13 @@ export function WorkspacePage() {
                             {wave.counterpartyName || "—"}
                           </div>
                           {linkedInvoice && (
-                            <div className="text-xs text-green-600 mt-1 truncate">
+                            <div className={`text-xs mt-1 truncate ${hasUnusedCredit ? "text-orange-500" : "text-green-600"}`}>
                               → {linkedInvoice.supplierName} · {formatCFA(linkedInvoice.amount)}
+                              {hasUnusedCredit && (
+                                <span className="ml-1 font-medium">
+                                  (surplus: {formatCFA(waveAmt - linkedAmt)})
+                                </span>
+                              )}
                             </div>
                           )}
                         </div>
