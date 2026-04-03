@@ -589,101 +589,199 @@ function WaveLinkPanel({
             ) : (
               <div className="space-y-3">
                 {groupedInvoices.map((group) => (
-                  <div key={group.supplierName} className={`rounded-lg border ${group.allDone ? "border-green-200 opacity-50" : group.hasPartial ? "border-orange-200" : "border-gray-200"}`}>
-                    <div className={`px-3 py-2 text-sm font-medium rounded-t-lg ${group.allDone ? "bg-green-50 text-green-700" : group.hasPartial ? "bg-orange-50 text-orange-800" : "bg-gray-50 text-gray-700"}`}>
-                      {group.supplierName}
-                      <span className="text-xs font-normal ml-2 opacity-70">
-                        ({group.invoices.length} facture{group.invoices.length > 1 ? "s" : ""})
-                      </span>
-                    </div>
-                    <div className="divide-y divide-gray-100">
-                      {group.invoices
-                        .sort((a, b) => {
-                          // Partials first, then pending, then done at the bottom
-                          const order = { partial: 0, pending: 1, done: 2 };
-                          const diff = order[a.reconStatus] - order[b.reconStatus];
-                          if (diff !== 0) return diff;
-                          return new Date(a.invoiceDate).getTime() - new Date(b.invoiceDate).getTime();
-                        })
-                        .map((inv) => {
-                          const remaining = inv.remainingDue - inv.reconciledTotal;
-                          const diff = Math.abs(remaining - waveAmount);
-                          const isExactMatch = diff < 1 && inv.reconStatus !== "done";
-                          const isPartial = inv.reconStatus === "partial";
-                          const isDone = inv.reconStatus === "done";
-
-                          return (
-                            <div
-                              key={inv.id}
-                              className={`flex items-center justify-between py-2 px-3 ${
-                                isDone
-                                  ? "bg-green-50/30 opacity-60"
-                                  : isPartial
-                                  ? "bg-orange-50/50"
-                                  : isExactMatch
-                                  ? "bg-green-50/50"
-                                  : ""
-                              }`}
-                            >
-                              <div className="min-w-0 flex-1">
-                                <div className="flex items-center gap-2">
-                                  <span className={`text-sm ${isDone ? "text-green-600 line-through" : "text-gray-900"}`}>
-                                    {formatCFA(inv.amount)}
-                                  </span>
-                                  {isDone && (
-                                    <span className="text-xs bg-green-100 text-green-600 px-1.5 py-0.5 rounded font-medium">
-                                      Rapproché
-                                    </span>
-                                  )}
-                                  {isPartial && (
-                                    <span className="text-xs bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded font-medium">
-                                      Reste {formatCFA(remaining)}
-                                    </span>
-                                  )}
-                                  {isExactMatch && !isPartial && (
-                                    <span className="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-medium">
-                                      Montant exact
-                                    </span>
-                                  )}
-                                </div>
-                                <div className="text-xs text-gray-500 mt-0.5">
-                                  {formatDateShort(inv.invoiceDate)} · {inv.description?.slice(0, 40) || inv.paymentType}
-                                  {isPartial && (
-                                    <span className="text-orange-500 ml-1">(rapproché: {formatCFA(inv.reconciledTotal)})</span>
-                                  )}
-                                </div>
-                              </div>
-                              {!isDone && (
-                                <button
-                                  onClick={() => linkMutation.mutate(inv.id)}
-                                  disabled={linkMutation.isPending}
-                                  className="text-xs text-pine font-medium hover:text-pine-hover whitespace-nowrap ml-2"
-                                >
-                                  Lier
-                                </button>
-                              )}
-                              {(isDone || isPartial) && invoiceToLinkIds[inv.id] && (
-                                <button
-                                  onClick={() => {
-                                    const linkIds = invoiceToLinkIds[inv.id];
-                                    if (linkIds) linkIds.forEach((id) => unlinkSingleMutation.mutate(id));
-                                  }}
-                                  disabled={unlinkSingleMutation.isPending}
-                                  className="text-xs text-red-400 hover:text-red-600 font-medium whitespace-nowrap ml-2"
-                                >
-                                  Délier
-                                </button>
-                              )}
-                            </div>
-                          );
-                        })}
-                    </div>
-                  </div>
+                  <SupplierGroup
+                    key={group.supplierName}
+                    group={group}
+                    waveAmount={waveAmount}
+                    sessionId={sessionId}
+                    invoiceToLinkIds={invoiceToLinkIds}
+                    onLink={(invId) => linkMutation.mutate(invId)}
+                    onUnlinkInvoice={(linkIds) => linkIds.forEach((id) => unlinkSingleMutation.mutate(id))}
+                    onChanged={onChanged}
+                    linkPending={linkMutation.isPending}
+                    unlinkPending={unlinkSingleMutation.isPending}
+                  />
                 ))}
               </div>
             )}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Supplier Group (invoices grouped by supplier with cash input) ──
+
+function SupplierGroup({
+  group,
+  waveAmount,
+  sessionId,
+  invoiceToLinkIds,
+  onLink,
+  onUnlinkInvoice,
+  onChanged,
+  linkPending,
+  unlinkPending,
+}: {
+  group: { supplierName: string; invoices: InvoiceRow[]; hasPartial: boolean; allDone: boolean };
+  waveAmount: number;
+  sessionId: string;
+  invoiceToLinkIds: Record<string, string[]>;
+  onLink: (invoiceId: string) => void;
+  onUnlinkInvoice: (linkIds: string[]) => void;
+  onChanged: () => void;
+  linkPending: boolean;
+  unlinkPending: boolean;
+}) {
+  const [cashInvoiceId, setCashInvoiceId] = useState<string | null>(null);
+  const [cashAmount, setCashAmount] = useState("");
+
+  const cashMutation = useMutation({
+    mutationFn: (data: { invoiceId: string; amount: number }) =>
+      api.post("/api/reconcile", {
+        sessionId,
+        invoiceId: data.invoiceId,
+        cashAmount: data.amount,
+      }),
+    onSuccess: () => {
+      setCashInvoiceId(null);
+      setCashAmount("");
+      onChanged();
+    },
+  });
+
+  const handleAddCash = (invoiceId: string) => {
+    const amount = parseInt(cashAmount) || 0;
+    if (amount <= 0) return;
+    cashMutation.mutate({ invoiceId, amount });
+  };
+
+  return (
+    <div className={`rounded-lg border ${group.allDone ? "border-green-200 opacity-50" : group.hasPartial ? "border-orange-200" : "border-gray-200"}`}>
+      <div className={`px-3 py-2 text-sm font-medium rounded-t-lg flex items-center justify-between ${group.allDone ? "bg-green-50 text-green-700" : group.hasPartial ? "bg-orange-50 text-orange-800" : "bg-gray-50 text-gray-700"}`}>
+        <div>
+          {group.supplierName}
+          <span className="text-xs font-normal ml-2 opacity-70">
+            ({group.invoices.length} facture{group.invoices.length > 1 ? "s" : ""})
+          </span>
+        </div>
+      </div>
+      <div className="divide-y divide-gray-100">
+        {group.invoices
+          .sort((a, b) => {
+            const order = { partial: 0, pending: 1, done: 2 };
+            const diff = order[a.reconStatus] - order[b.reconStatus];
+            if (diff !== 0) return diff;
+            return new Date(a.invoiceDate).getTime() - new Date(b.invoiceDate).getTime();
+          })
+          .map((inv) => {
+            const remaining = inv.remainingDue - inv.reconciledTotal;
+            const diff = Math.abs(remaining - waveAmount);
+            const isExactMatch = diff < 1 && inv.reconStatus !== "done";
+            const isPartial = inv.reconStatus === "partial";
+            const isDone = inv.reconStatus === "done";
+
+            return (
+              <div key={inv.id}>
+                <div
+                  className={`flex items-center justify-between py-2 px-3 ${
+                    isDone
+                      ? "bg-green-50/30 opacity-60"
+                      : isPartial
+                      ? "bg-orange-50/50"
+                      : isExactMatch
+                      ? "bg-green-50/50"
+                      : ""
+                  }`}
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className={`text-sm ${isDone ? "text-green-600 line-through" : "text-gray-900"}`}>
+                        {formatCFA(inv.amount)}
+                      </span>
+                      {isDone && (
+                        <span className="text-xs bg-green-100 text-green-600 px-1.5 py-0.5 rounded font-medium">
+                          Rapproché
+                        </span>
+                      )}
+                      {isPartial && (
+                        <span className="text-xs bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded font-medium">
+                          Reste {formatCFA(remaining)}
+                        </span>
+                      )}
+                      {isExactMatch && !isPartial && (
+                        <span className="text-xs bg-green-100 text-green-700 px-1.5 py-0.5 rounded font-medium">
+                          Montant exact
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-xs text-gray-500 mt-0.5">
+                      {formatDateShort(inv.invoiceDate)} · {inv.description?.slice(0, 40) || inv.paymentType}
+                      {isPartial && (
+                        <span className="text-orange-500 ml-1">(rapproché: {formatCFA(inv.reconciledTotal)})</span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1 ml-2">
+                    {!isDone && (
+                      <button
+                        onClick={() => onLink(inv.id)}
+                        disabled={linkPending}
+                        className="text-xs text-pine font-medium hover:text-pine-hover whitespace-nowrap"
+                      >
+                        Lier
+                      </button>
+                    )}
+                    {!isDone && remaining > 0 && (
+                      <button
+                        onClick={() => setCashInvoiceId(cashInvoiceId === inv.id ? null : inv.id)}
+                        className="text-xs text-gray-400 hover:text-gray-600 whitespace-nowrap"
+                        title="Ajouter paiement espèces"
+                      >
+                        Esp.
+                      </button>
+                    )}
+                    {(isDone || isPartial) && invoiceToLinkIds[inv.id] && (
+                      <button
+                        onClick={() => onUnlinkInvoice(invoiceToLinkIds[inv.id])}
+                        disabled={unlinkPending}
+                        className="text-xs text-red-400 hover:text-red-600 font-medium whitespace-nowrap"
+                      >
+                        Délier
+                      </button>
+                    )}
+                  </div>
+                </div>
+                {/* Inline cash input */}
+                {cashInvoiceId === inv.id && (
+                  <div className="px-3 py-2 bg-gray-50 flex items-center gap-2">
+                    <input
+                      type="number"
+                      value={cashAmount}
+                      onChange={(e) => setCashAmount(e.target.value)}
+                      placeholder={`Espèces (max ${Math.round(remaining)})`}
+                      className="input !py-1.5 !text-sm flex-1"
+                      autoFocus
+                    />
+                    <button
+                      onClick={() => handleAddCash(inv.id)}
+                      disabled={!cashAmount || cashMutation.isPending}
+                      className="text-xs bg-pine text-white px-3 py-1.5 rounded-lg hover:bg-pine-hover disabled:opacity-50"
+                    >
+                      {cashMutation.isPending ? "..." : "OK"}
+                    </button>
+                    <button
+                      onClick={() => { setCashInvoiceId(null); setCashAmount(""); }}
+                      className="text-xs text-gray-400 hover:text-gray-600"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
       </div>
     </div>
   );
