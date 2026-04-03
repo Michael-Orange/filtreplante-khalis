@@ -356,6 +356,7 @@ export function WorkspacePage() {
                 sessionId={sessionId}
                 invoices={invoices || []}
                 links={waveToLinks[selectedWave.id] || []}
+                allLinks={allLinks || []}
                 onBack={() => setSelectedWaveId(null)}
                 onChanged={invalidateAll}
               />
@@ -399,6 +400,7 @@ function WaveLinkPanel({
   sessionId,
   invoices,
   links,
+  allLinks,
   onBack,
   onChanged,
 }: {
@@ -414,6 +416,7 @@ function WaveLinkPanel({
     invoiceDate: string | null;
     invoiceDescription: string | null;
   }[];
+  allLinks: ReconciliationLink[];
   onBack: () => void;
   onChanged: () => void;
 }) {
@@ -446,6 +449,22 @@ function WaveLinkPanel({
     onSuccess: () => onChanged(),
   });
 
+  // Unlink a single link by ID
+  const unlinkSingleMutation = useMutation({
+    mutationFn: (linkId: string) => api.delete(`/api/reconcile/${linkId}`),
+    onSuccess: () => onChanged(),
+  });
+
+  // Build a map: invoiceId -> linkIds for this session (to enable per-invoice unlink)
+  const invoiceToLinkIds = useMemo(() => {
+    const map: Record<string, string[]> = {};
+    for (const link of allLinks) {
+      if (!map[link.invoiceId]) map[link.invoiceId] = [];
+      map[link.invoiceId].push(link.id);
+    }
+    return map;
+  }, [allLinks]);
+
   const showLinked = isLinked || pendingInvoiceId;
 
   // Group ALL invoices by supplier. Hide supplier only when ALL its invoices are done.
@@ -462,14 +481,20 @@ function WaveLinkPanel({
       if (inv.reconStatus !== "done") groups[key].allDone = false;
     }
 
-    // Only hide suppliers where every single invoice is fully reconciled
+    // All groups visible. allDone groups at the bottom.
     return Object.values(groups)
-      .filter((g) => !g.allDone)
       .sort((a, b) => {
+        // allDone groups go to the bottom
+        if (a.allDone && !b.allDone) return 1;
+        if (!a.allDone && b.allDone) return -1;
+        // Among non-done: partial first, then by closest amount
         if (a.hasPartial && !b.hasPartial) return -1;
         if (!a.hasPartial && b.hasPartial) return 1;
-        const bestA = Math.min(...a.invoices.filter((i) => i.reconStatus !== "done").map((inv) => Math.abs((inv.remainingDue - inv.reconciledTotal) - waveAmount)));
-        const bestB = Math.min(...b.invoices.filter((i) => i.reconStatus !== "done").map((inv) => Math.abs((inv.remainingDue - inv.reconciledTotal) - waveAmount)));
+        const pendingA = a.invoices.filter((i) => i.reconStatus !== "done");
+        const pendingB = b.invoices.filter((i) => i.reconStatus !== "done");
+        if (pendingA.length === 0 || pendingB.length === 0) return 0;
+        const bestA = Math.min(...pendingA.map((inv) => Math.abs((inv.remainingDue - inv.reconciledTotal) - waveAmount)));
+        const bestB = Math.min(...pendingB.map((inv) => Math.abs((inv.remainingDue - inv.reconciledTotal) - waveAmount)));
         return bestA - bestB;
       });
   }, [invoices, waveAmount]);
@@ -564,8 +589,8 @@ function WaveLinkPanel({
             ) : (
               <div className="space-y-3">
                 {groupedInvoices.map((group) => (
-                  <div key={group.supplierName} className={`rounded-lg border ${group.hasPartial ? "border-orange-200" : "border-gray-200"}`}>
-                    <div className={`px-3 py-2 text-sm font-medium rounded-t-lg ${group.hasPartial ? "bg-orange-50 text-orange-800" : "bg-gray-50 text-gray-700"}`}>
+                  <div key={group.supplierName} className={`rounded-lg border ${group.allDone ? "border-green-200 opacity-50" : group.hasPartial ? "border-orange-200" : "border-gray-200"}`}>
+                    <div className={`px-3 py-2 text-sm font-medium rounded-t-lg ${group.allDone ? "bg-green-50 text-green-700" : group.hasPartial ? "bg-orange-50 text-orange-800" : "bg-gray-50 text-gray-700"}`}>
                       {group.supplierName}
                       <span className="text-xs font-normal ml-2 opacity-70">
                         ({group.invoices.length} facture{group.invoices.length > 1 ? "s" : ""})
@@ -635,6 +660,18 @@ function WaveLinkPanel({
                                   className="text-xs text-pine font-medium hover:text-pine-hover whitespace-nowrap ml-2"
                                 >
                                   Lier
+                                </button>
+                              )}
+                              {(isDone || isPartial) && invoiceToLinkIds[inv.id] && (
+                                <button
+                                  onClick={() => {
+                                    const linkIds = invoiceToLinkIds[inv.id];
+                                    if (linkIds) linkIds.forEach((id) => unlinkSingleMutation.mutate(id));
+                                  }}
+                                  disabled={unlinkSingleMutation.isPending}
+                                  className="text-xs text-red-400 hover:text-red-600 font-medium whitespace-nowrap ml-2"
+                                >
+                                  Délier
                                 </button>
                               )}
                             </div>
