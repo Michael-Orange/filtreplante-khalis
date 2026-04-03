@@ -106,6 +106,7 @@ export function WorkspacePage() {
   });
 
   const hasWaves = session && session.waveTransactions.length > 0;
+  const dataReady = hasWaves && !linksLoading && !!allLinks;
 
   // Build a map: waveId -> linked invoice info
   const waveToLink = useMemo(() => {
@@ -210,12 +211,19 @@ export function WorkspacePage() {
       </div>
 
       {/* CSV Upload if no waves yet */}
-      {!hasWaves && (
+      {!hasWaves && !sessionLoading && (
         <CsvUpload sessionId={sessionId} onImported={invalidateAll} />
       )}
 
+      {/* Loading state while links load */}
+      {hasWaves && !dataReady && (
+        <div className="flex-1 flex justify-center items-center">
+          <div className="w-8 h-8 border-4 border-pine border-t-transparent rounded-full animate-spin" />
+        </div>
+      )}
+
       {/* Main content — Wave-centric view */}
-      {hasWaves && !showCashSection && (
+      {dataReady && !showCashSection && (
         <div className="flex-1 flex overflow-hidden">
           {/* Left panel — Wave transactions */}
           <div
@@ -248,11 +256,7 @@ export function WorkspacePage() {
 
             {/* Wave transaction list */}
             <div className="flex-1 overflow-y-auto">
-              {linksLoading ? (
-                <div className="flex justify-center py-8">
-                  <div className="w-6 h-6 border-3 border-pine border-t-transparent rounded-full animate-spin" />
-                </div>
-              ) : filteredWaves.length === 0 ? (
+              {filteredWaves.length === 0 ? (
                 <div className="text-center py-8 text-gray-400 text-sm">
                   Aucune transaction pour ce filtre
                 </div>
@@ -340,7 +344,7 @@ export function WorkspacePage() {
       )}
 
       {/* Cash section — manage espèces payments */}
-      {hasWaves && showCashSection && (
+      {dataReady && showCashSection && (
         <CashSection
           invoices={invoices || []}
           sessionId={sessionId}
@@ -349,7 +353,7 @@ export function WorkspacePage() {
       )}
 
       {/* Unreconciled invoices alert */}
-      {unreconciledInvoices.length > 0 && hasWaves && (
+      {unreconciledInvoices.length > 0 && dataReady && (
         <div className="bg-orange-50 border-t border-orange-200 px-4 py-2 flex-shrink-0">
           <div className="text-orange-700 text-sm font-medium">
             {unreconciledInvoices.length} facture{unreconciledInvoices.length > 1 ? "s" : ""} non rapprochée{unreconciledInvoices.length > 1 ? "s" : ""}
