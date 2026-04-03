@@ -56,6 +56,12 @@ interface ReconciliationLink {
   waveDate: string | null;
   waveTotal: string | null;
   waveCounterparty: string | null;
+  // Invoice details from join
+  invoiceAmount: string | null;
+  invoiceDate: string | null;
+  invoiceDescription: string | null;
+  invoicePaymentType: string | null;
+  supplierName: string | null;
 }
 
 interface Summary {
@@ -110,7 +116,15 @@ export function WorkspacePage() {
 
   // Build a map: waveId -> array of linked invoices (1 Wave can cover N invoices of same supplier)
   const waveToLinks = useMemo(() => {
-    const map: Record<string, { linkId: string; invoiceId: string; waveAmount: number }[]> = {};
+    const map: Record<string, {
+      linkId: string;
+      invoiceId: string;
+      waveAmount: number;
+      supplierName: string | null;
+      invoiceAmount: string | null;
+      invoiceDate: string | null;
+      invoiceDescription: string | null;
+    }[]> = {};
     if (allLinks) {
       for (const link of allLinks) {
         if (link.waveTransactionId) {
@@ -119,6 +133,10 @@ export function WorkspacePage() {
             linkId: link.id,
             invoiceId: link.invoiceId,
             waveAmount: parseFloat(link.waveAmount),
+            supplierName: link.supplierName,
+            invoiceAmount: link.invoiceAmount,
+            invoiceDate: link.invoiceDate,
+            invoiceDescription: link.invoiceDescription,
           });
         }
       }
@@ -380,7 +398,15 @@ function WaveLinkPanel({
   wave: WaveTransaction;
   sessionId: string;
   invoices: InvoiceRow[];
-  links: { linkId: string; invoiceId: string; waveAmount: number }[];
+  links: {
+    linkId: string;
+    invoiceId: string;
+    waveAmount: number;
+    supplierName: string | null;
+    invoiceAmount: string | null;
+    invoiceDate: string | null;
+    invoiceDescription: string | null;
+  }[];
   onBack: () => void;
   onChanged: () => void;
 }) {
@@ -470,19 +496,21 @@ function WaveLinkPanel({
               </button>
             </div>
             <div className="space-y-1.5">
-              {links.map((link) => {
-                const inv = invoices.find((i) => i.id === link.invoiceId);
-                return (
-                  <div key={link.linkId} className="bg-green-50 rounded-lg px-3 py-2 text-sm">
-                    <div className="text-green-700 font-medium">
-                      {inv?.supplierName || "—"} · {formatCFA(link.waveAmount)}
-                    </div>
-                    <div className="text-green-500 text-xs">
-                      {inv ? `${formatDateShort(inv.invoiceDate)} · ${inv.description?.slice(0, 40) || inv.paymentType}` : ""}
-                    </div>
+              {links.map((link) => (
+                <div key={link.linkId} className="bg-green-50 rounded-lg px-3 py-2 text-sm">
+                  <div className="text-green-700 font-medium">
+                    {link.supplierName || "—"} · {formatCFA(link.waveAmount)}
+                    {link.invoiceAmount && (
+                      <span className="font-normal text-green-500 ml-1">
+                        (facture: {formatCFA(parseFloat(link.invoiceAmount))})
+                      </span>
+                    )}
                   </div>
-                );
-              })}
+                  <div className="text-green-500 text-xs">
+                    {link.invoiceDate ? formatDateShort(link.invoiceDate) : ""} · {link.invoiceDescription?.slice(0, 50) || ""}
+                  </div>
+                </div>
+              ))}
             </div>
             {surplus > 1 && (
               <div className="mt-2 text-xs text-orange-600 font-medium">

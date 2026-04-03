@@ -1,9 +1,9 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import { eq, and, sql, isNull } from "drizzle-orm";
+import { eq, and, sql, isNull, gte, lte } from "drizzle-orm";
 import { createDb } from "../lib/db";
 import { AppError } from "../middleware/error";
-import { reconciliationLinks, waveTransactions } from "../schema/khalis";
+import { reconciliationLinks, waveTransactions, sessions } from "../schema/khalis";
 import { invoices, suppliers, payments } from "../schema/facture";
 import type { Env } from "../types/env";
 
@@ -78,6 +78,17 @@ app.post("/", async (c) => {
 
   const waveTotal = parseFloat(wave.amount);
 
+  // Get session dates for period filtering
+  const [session] = await db
+    .select({ dateStart: sessions.dateStart, dateEnd: sessions.dateEnd })
+    .from(sessions)
+    .where(eq(sessions.id, sessionId));
+
+  if (!session) throw new AppError(404, "Session introuvable");
+
+  const dateStart = new Date(session.dateStart + "T00:00:00Z");
+  const dateEnd = new Date(session.dateEnd + "T23:59:59Z");
+
   // Get the target invoice to find its supplier
   const [targetInvoice] = await db
     .select({
@@ -130,7 +141,9 @@ app.post("/", async (c) => {
       and(
         eq(invoices.userName, "Fatou"),
         eq(invoices.supplierId, targetInvoice.supplierId),
-        isNull(invoices.archive)
+        isNull(invoices.archive),
+        gte(invoices.invoiceDate, dateStart),
+        lte(invoices.invoiceDate, dateEnd)
       )
     )
     .orderBy(invoices.invoiceDate);
@@ -227,12 +240,20 @@ app.get("/session/:sessionId", async (c) => {
       waveDate: waveTransactions.transactionDate,
       waveTotal: waveTransactions.amount,
       waveCounterparty: waveTransactions.counterpartyName,
+      // Invoice details
+      invoiceAmount: invoices.amountDisplayTTC,
+      invoiceDate: invoices.invoiceDate,
+      invoiceDescription: invoices.description,
+      invoicePaymentType: invoices.paymentType,
+      supplierName: suppliers.name,
     })
     .from(reconciliationLinks)
     .leftJoin(
       waveTransactions,
       eq(reconciliationLinks.waveTransactionId, waveTransactions.id)
     )
+    .leftJoin(invoices, eq(reconciliationLinks.invoiceId, invoices.id))
+    .leftJoin(suppliers, eq(invoices.supplierId, suppliers.id))
     .where(eq(reconciliationLinks.sessionId, sessionId));
 
   return c.json(links);
