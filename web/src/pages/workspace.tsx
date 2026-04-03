@@ -98,7 +98,7 @@ export function WorkspacePage() {
   });
 
   // All reconciliation links for this session (single query)
-  const { data: allLinks } = useQuery({
+  const { data: allLinks, isLoading: linksLoading } = useQuery({
     queryKey: ["allLinks", sessionId],
     queryFn: () =>
       api.get<ReconciliationLink[]>(`/api/reconcile/session/${sessionId}`),
@@ -248,7 +248,11 @@ export function WorkspacePage() {
 
             {/* Wave transaction list */}
             <div className="flex-1 overflow-y-auto">
-              {filteredWaves.length === 0 ? (
+              {linksLoading ? (
+                <div className="flex justify-center py-8">
+                  <div className="w-6 h-6 border-3 border-pine border-t-transparent rounded-full animate-spin" />
+                </div>
+              ) : filteredWaves.length === 0 ? (
                 <div className="text-center py-8 text-gray-400 text-sm">
                   Aucune transaction pour ce filtre
                 </div>
