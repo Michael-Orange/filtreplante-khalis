@@ -88,7 +88,6 @@ export function WorkspacePage() {
   const [selectedWaveId, setSelectedWaveId] = useState<string | null>(null);
   const [expandedWaveId, setExpandedWaveId] = useState<string | null>(null);
   const [waveFilter, setWaveFilter] = useState<WaveFilter>("all");
-  const [showCashSection, setShowCashSection] = useState(false);
 
   const { data: session, isLoading: sessionLoading } = useQuery({
     queryKey: ["session", sessionId],
@@ -226,21 +225,13 @@ export function WorkspacePage() {
           </div>
         </div>
         {hasWaves && (
-          <div className="flex items-center gap-2">
-            <button
-              onClick={invalidateAll}
-              className="text-xs text-gray-400 hover:text-pine transition-colors p-1.5"
-              title="Rafraîchir les factures"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-            </button>
-            <button
-              onClick={() => setShowCashSection(!showCashSection)}
-              className="btn-secondary text-xs !px-3 !py-1.5 !min-h-0 !rounded-lg"
-            >
-              {showCashSection ? "Transactions Wave" : "Espèces"}
-            </button>
-          </div>
+          <button
+            onClick={invalidateAll}
+            className="text-xs text-gray-400 hover:text-pine transition-colors p-1.5"
+            title="Rafraîchir les factures"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+          </button>
         )}
       </div>
 
@@ -257,7 +248,7 @@ export function WorkspacePage() {
       )}
 
       {/* Main content — Wave-centric view */}
-      {dataReady && !showCashSection && (
+      {dataReady && (
         <div className="flex-1 flex overflow-hidden">
           {/* Left panel — Wave transactions */}
           <div
@@ -412,15 +403,6 @@ export function WorkspacePage() {
             )}
           </div>
         </div>
-      )}
-
-      {/* Cash section — manage espèces payments */}
-      {dataReady && showCashSection && (
-        <CashSection
-          invoices={invoices || []}
-          sessionId={sessionId}
-          onChanged={invalidateAll}
-        />
       )}
 
       {/* Unreconciled invoices alert */}
@@ -857,111 +839,3 @@ function SupplierGroup({
   );
 }
 
-// ─── Cash Section ─────────────────────────────────────────────────
-
-function CashSection({
-  invoices,
-  sessionId,
-  onChanged,
-}: {
-  invoices: InvoiceRow[];
-  sessionId: string;
-  onChanged: () => void;
-}) {
-  const [cashInputs, setCashInputs] = useState<Record<string, string>>({});
-  const queryClient = useQueryClient();
-
-  const linkMutation = useMutation({
-    mutationFn: (data: { invoiceId: string; cashAmount: number }) =>
-      api.post("/api/reconcile", {
-        sessionId,
-        invoiceId: data.invoiceId,
-        cashAmount: data.cashAmount,
-      }),
-    onSuccess: () => onChanged(),
-  });
-
-  const handleAddCash = (invoiceId: string) => {
-    const amount = parseInt(cashInputs[invoiceId] || "0") || 0;
-    if (amount <= 0) return;
-    linkMutation.mutate({ invoiceId, cashAmount: amount });
-    setCashInputs((prev) => ({ ...prev, [invoiceId]: "" }));
-  };
-
-  // Show invoices that still need reconciliation
-  const pendingInvoices = invoices.filter((inv) => inv.reconStatus !== "done");
-
-  return (
-    <div className="flex-1 overflow-y-auto p-4">
-      <h3 className="font-heading font-semibold text-gray-900 mb-3">
-        Paiements espèces
-      </h3>
-      <p className="text-sm text-gray-500 mb-4">
-        Ajoutez les montants payés en espèces pour chaque facture.
-      </p>
-
-      {pendingInvoices.length === 0 ? (
-        <div className="text-center py-8 text-gray-400">
-          Toutes les factures sont rapprochées
-        </div>
-      ) : (
-        <div className="space-y-2">
-          {pendingInvoices.map((inv) => {
-            const toReconcile = inv.remainingDue - inv.reconciledTotal;
-
-            return (
-              <div key={inv.id} className="card">
-                <div className="flex items-center justify-between mb-2">
-                  <div>
-                    <span className="font-medium text-sm text-gray-900">
-                      {inv.supplierName || "—"}
-                    </span>
-                    <span className="text-xs text-gray-500 ml-2">
-                      {formatDateShort(inv.invoiceDate)}
-                    </span>
-                  </div>
-                  <span className="text-sm font-medium">
-                    {formatCFA(inv.amount)}
-                  </span>
-                </div>
-                {inv.reconciledTotal > 0 && (
-                  <div className="text-xs text-gray-500 mb-2">
-                    Déjà rapproché : {formatCFA(inv.reconciledTotal)}
-                    {inv.reconciledWave > 0 && ` (Wave: ${formatCFA(inv.reconciledWave)})`}
-                    {inv.reconciledCash > 0 && ` (Espèces: ${formatCFA(inv.reconciledCash)})`}
-                    {" · "}Reste : {formatCFA(Math.max(0, toReconcile))}
-                  </div>
-                )}
-                {toReconcile > 0 && (
-                  <div className="flex gap-2">
-                    <input
-                      type="number"
-                      value={cashInputs[inv.id] || ""}
-                      onChange={(e) =>
-                        setCashInputs((prev) => ({
-                          ...prev,
-                          [inv.id]: e.target.value,
-                        }))
-                      }
-                      placeholder={`Espèces (reste ${Math.round(toReconcile)})`}
-                      className="input !py-2 flex-1 text-sm"
-                    />
-                    <button
-                      onClick={() => handleAddCash(inv.id)}
-                      disabled={
-                        !cashInputs[inv.id] || linkMutation.isPending
-                      }
-                      className="btn-secondary text-xs !px-3 !py-2 !min-h-0"
-                    >
-                      Ajouter
-                    </button>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
