@@ -88,6 +88,7 @@ export function WorkspacePage() {
   const [selectedWaveId, setSelectedWaveId] = useState<string | null>(null);
   const [expandedWaveId, setExpandedWaveId] = useState<string | null>(null);
   const [waveFilter, setWaveFilter] = useState<WaveFilter>("all");
+  const [activeTab, setActiveTab] = useState<"rapprochement" | "resume">("rapprochement");
 
   const { data: session, isLoading: sessionLoading } = useQuery({
     queryKey: ["session", sessionId],
@@ -224,16 +225,44 @@ export function WorkspacePage() {
             </p>
           </div>
         </div>
-        {hasWaves && (
-          <button
-            onClick={invalidateAll}
-            className="text-xs text-gray-400 hover:text-pine transition-colors p-1.5"
-            title="Rafraîchir les factures"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          {hasWaves && (
+            <button
+              onClick={invalidateAll}
+              className="text-xs text-gray-400 hover:text-pine transition-colors p-1.5"
+              title="Rafraîchir les factures"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            </button>
+          )}
+        </div>
       </div>
+
+      {/* Tabs */}
+      {dataReady && (
+        <div className="flex border-b bg-white flex-shrink-0">
+          <button
+            onClick={() => setActiveTab("rapprochement")}
+            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === "rapprochement"
+                ? "border-pine text-pine"
+                : "border-transparent text-gray-500 hover:text-gray-700"
+            }`}
+          >
+            Rapprochement
+          </button>
+          <button
+            onClick={() => setActiveTab("resume")}
+            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === "resume"
+                ? "border-pine text-pine"
+                : "border-transparent text-gray-500 hover:text-gray-700"
+            }`}
+          >
+            Résumé dépenses
+          </button>
+        </div>
+      )}
 
       {/* CSV Upload if no waves yet */}
       {!hasWaves && !sessionLoading && (
@@ -247,8 +276,13 @@ export function WorkspacePage() {
         </div>
       )}
 
+      {/* Resume tab */}
+      {dataReady && activeTab === "resume" && (
+        <ResumeTab waves={session.waveTransactions} projects={[]} sessionId={sessionId} />
+      )}
+
       {/* Main content — Wave-centric view */}
-      {dataReady && (
+      {dataReady && activeTab === "rapprochement" && (
         <div className="flex-1 flex overflow-hidden">
           {/* Left panel — Wave transactions */}
           <div
@@ -324,7 +358,10 @@ export function WorkspacePage() {
                                 {formatCFA(waveAmt)}
                               </span>
                               {hasMetadata && (
-                                <span className="text-xs text-blue-500">●</span>
+                                <span className="inline-flex items-center gap-0.5 text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded font-medium">
+                                  <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                                  Facture
+                                </span>
                               )}
                             </div>
                             <div className="text-xs text-gray-500 truncate mt-0.5">
@@ -834,6 +871,162 @@ function SupplierGroup({
               </div>
             );
           })}
+      </div>
+    </div>
+  );
+}
+
+// ─── Resume Tab ───────────────────────────────────────────────────
+
+function ResumeTab({
+  waves,
+  sessionId,
+}: {
+  waves: WaveTransaction[];
+  projects: any[];
+  sessionId: string;
+}) {
+  const { data: projects } = useQuery({
+    queryKey: ["projects"],
+    queryFn: () => api.get<{ id: string; name: string }[]>("/api/metadata/projects"),
+    staleTime: 5 * 60_000,
+  });
+
+  // Build summary from wave metadata
+  const wavesWithMeta = waves.filter(
+    (w) => w.projectId || (w.allocations && w.allocations.length > 0)
+  );
+
+  // Group by project
+  const projectMap = new Map<string, {
+    projectName: string;
+    persons: Map<string, number>;
+    totalAmount: number;
+    waveCount: number;
+  }>();
+
+  for (const w of wavesWithMeta) {
+    const projId = w.projectId || "__none__";
+    const projName =
+      w.projectId && projects
+        ? projects.find((p) => p.id === w.projectId)?.name || "Projet inconnu"
+        : "Sans projet";
+
+    if (!projectMap.has(projId)) {
+      projectMap.set(projId, {
+        projectName: projName,
+        persons: new Map(),
+        totalAmount: 0,
+        waveCount: 0,
+      });
+    }
+    const group = projectMap.get(projId)!;
+    group.waveCount++;
+
+    if (w.allocations) {
+      for (const alloc of w.allocations) {
+        group.persons.set(
+          alloc.name,
+          (group.persons.get(alloc.name) || 0) + alloc.amount
+        );
+        group.totalAmount += alloc.amount;
+      }
+    }
+  }
+
+  // Also build per-person summary across all projects
+  const personTotals = new Map<string, number>();
+  for (const [, group] of projectMap) {
+    for (const [name, amount] of group.persons) {
+      personTotals.set(name, (personTotals.get(name) || 0) + amount);
+    }
+  }
+
+  const grandTotal = Array.from(personTotals.values()).reduce((s, a) => s + a, 0);
+
+  if (wavesWithMeta.length === 0) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-gray-400 text-sm p-8">
+        <div className="text-center">
+          <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="mx-auto mb-3 text-gray-300">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+          </svg>
+          <p>Aucune dépense renseignée.</p>
+          <p className="mt-1 text-xs">Utilisez le chevron (v) sur chaque transaction Wave pour ajouter un projet et une répartition.</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex-1 overflow-y-auto">
+      {/* Per-person summary */}
+      <div className="p-4">
+        <h3 className="font-heading font-semibold text-gray-900 mb-3">
+          Récapitulatif par personne
+        </h3>
+        <div className="bg-white rounded-xl border border-gray-200 divide-y">
+          {Array.from(personTotals.entries())
+            .sort((a, b) => b[1] - a[1])
+            .map(([name, amount]) => (
+              <div key={name} className="flex items-center justify-between px-4 py-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-full bg-pine-light text-pine flex items-center justify-center text-sm font-semibold">
+                    {name.charAt(0).toUpperCase()}
+                  </div>
+                  <span className="text-sm font-medium text-gray-900">{name}</span>
+                </div>
+                <span className="text-sm font-semibold text-gray-900">
+                  {formatCFA(amount)}
+                </span>
+              </div>
+            ))}
+          <div className="flex items-center justify-between px-4 py-3 bg-gray-50">
+            <span className="text-sm font-semibold text-gray-700">Total</span>
+            <span className="text-sm font-bold text-gray-900">{formatCFA(grandTotal)}</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Per-project breakdown */}
+      <div className="p-4 pt-0">
+        <h3 className="font-heading font-semibold text-gray-900 mb-3">
+          Détail par projet
+        </h3>
+        <div className="space-y-3">
+          {Array.from(projectMap.entries()).map(([projId, group]) => (
+            <div key={projId} className="bg-white rounded-xl border border-gray-200">
+              <div className="px-4 py-3 border-b bg-gray-50 rounded-t-xl flex items-center justify-between">
+                <div>
+                  <span className="text-sm font-medium text-gray-900">
+                    {group.projectName}
+                  </span>
+                  <span className="text-xs text-gray-500 ml-2">
+                    ({group.waveCount} transaction{group.waveCount > 1 ? "s" : ""})
+                  </span>
+                </div>
+                <span className="text-sm font-semibold text-gray-900">
+                  {formatCFA(group.totalAmount)}
+                </span>
+              </div>
+              <div className="divide-y">
+                {Array.from(group.persons.entries())
+                  .sort((a, b) => b[1] - a[1])
+                  .map(([name, amount]) => (
+                    <div key={name} className="flex items-center justify-between px-4 py-2.5">
+                      <div className="flex items-center gap-2">
+                        <div className="w-6 h-6 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center text-xs font-semibold">
+                          {name.charAt(0).toUpperCase()}
+                        </div>
+                        <span className="text-sm text-gray-700">{name}</span>
+                      </div>
+                      <span className="text-sm text-gray-900">{formatCFA(amount)}</span>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
