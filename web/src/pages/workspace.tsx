@@ -222,12 +222,21 @@ export function WorkspacePage() {
           </div>
         </div>
         {hasWaves && (
-          <button
-            onClick={() => setShowCashSection(!showCashSection)}
-            className="btn-secondary text-xs !px-3 !py-1.5 !min-h-0 !rounded-lg"
-          >
-            {showCashSection ? "Transactions Wave" : "Espèces"}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={invalidateAll}
+              className="text-xs text-gray-400 hover:text-pine transition-colors p-1.5"
+              title="Rafraîchir les factures"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            </button>
+            <button
+              onClick={() => setShowCashSection(!showCashSection)}
+              className="btn-secondary text-xs !px-3 !py-1.5 !min-h-0 !rounded-lg"
+            >
+              {showCashSection ? "Transactions Wave" : "Espèces"}
+            </button>
+          </div>
         )}
       </div>
 
