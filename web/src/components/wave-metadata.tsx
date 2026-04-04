@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { formatCFA } from "../lib/format";
@@ -24,6 +24,7 @@ interface Props {
   waveAmount: number;
   currentProjectId: string | null;
   currentAllocations: Allocation[];
+  allWaveAllocations: Allocation[];
   onChanged: () => void;
 }
 
@@ -32,6 +33,7 @@ export function WaveMetadata({
   waveAmount,
   currentProjectId,
   currentAllocations,
+  allWaveAllocations,
   onChanged,
 }: Props) {
   const queryClient = useQueryClient();
@@ -52,8 +54,12 @@ export function WaveMetadata({
   const [allocations, setAllocations] = useState<Allocation[]>(
     currentAllocations.length > 0 ? currentAllocations : []
   );
-  const [manualName, setManualName] = useState("");
-  const [showAddManual, setShowAddManual] = useState(false);
+  const [editingName, setEditingName] = useState<string | null>(null);
+  const [editNameValue, setEditNameValue] = useState("");
+  const [manualInput, setManualInput] = useState("");
+  const [showManual, setShowManual] = useState(false);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const manualRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setProjectId(currentProjectId || "");
@@ -91,6 +97,14 @@ export function WaveMetadata({
     );
   };
 
+  const renamePerson = (oldName: string, newName: string) => {
+    if (!newName.trim() || (newName !== oldName && allocations.some((a) => a.name === newName))) return;
+    setAllocations(
+      allocations.map((a) => (a.name === oldName ? { ...a, name: newName.trim() } : a))
+    );
+    setEditingName(null);
+  };
+
   const totalAllocated = allocations.reduce((s, a) => s + a.amount, 0);
   const remaining = waveAmount - totalAllocated;
 
@@ -102,7 +116,26 @@ export function WaveMetadata({
     (p) => !allocations.some((a) => a.name === p.name)
   );
 
-  const selectedProject = projects?.find((p) => p.id === projectId);
+  // Collect all unique manual names from all waves (for autocomplete)
+  const knownPersonNames = persons?.map((p) => p.name) || [];
+  const manualNames = Array.from(
+    new Set(
+      allWaveAllocations
+        .map((a) => a.name)
+        .filter((n) => !knownPersonNames.includes(n))
+    )
+  );
+
+  // Suggestions for manual input
+  const suggestions = manualInput.length >= 2
+    ? [...manualNames, ...knownPersonNames]
+        .filter(
+          (n) =>
+            n.toLowerCase().includes(manualInput.toLowerCase()) &&
+            !allocations.some((a) => a.name === n)
+        )
+        .slice(0, 5)
+    : [];
 
   return (
     <div className="border-t border-l-4 border-l-blue-400 border-t-gray-200 bg-gradient-to-r from-blue-50/50 to-white">
@@ -146,10 +179,33 @@ export function WaveMetadata({
                   <div className="w-7 h-7 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center text-xs font-semibold flex-shrink-0">
                     {alloc.name.charAt(0).toUpperCase()}
                   </div>
-                  <span className="text-sm text-gray-700 flex-shrink-0 w-24 truncate">
-                    {alloc.name}
-                  </span>
-                  <div className="flex-1 relative">
+                  {/* Editable name */}
+                  {editingName === alloc.name ? (
+                    <input
+                      type="text"
+                      value={editNameValue}
+                      onChange={(e) => setEditNameValue(e.target.value)}
+                      onBlur={() => renamePerson(alloc.name, editNameValue)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") renamePerson(alloc.name, editNameValue);
+                        if (e.key === "Escape") setEditingName(null);
+                      }}
+                      className="text-sm text-gray-700 w-24 bg-blue-50 border border-blue-300 rounded px-1.5 py-0.5 focus:outline-none"
+                      autoFocus
+                    />
+                  ) : (
+                    <span
+                      onClick={() => {
+                        setEditingName(alloc.name);
+                        setEditNameValue(alloc.name);
+                      }}
+                      className="text-sm text-gray-700 flex-shrink-0 w-24 truncate cursor-pointer hover:text-blue-600 hover:underline"
+                      title="Cliquer pour modifier"
+                    >
+                      {alloc.name}
+                    </span>
+                  )}
+                  <div className="flex-1">
                     <input
                       type="number"
                       value={alloc.amount || ""}
@@ -215,36 +271,79 @@ export function WaveMetadata({
               </select>
             )}
             <button
-              onClick={() => setShowAddManual(!showAddManual)}
+              onClick={() => {
+                setShowManual(!showManual);
+                setManualInput("");
+                setShowSuggestions(false);
+              }}
               className="text-xs text-blue-500 hover:text-blue-700 whitespace-nowrap font-medium"
             >
               + Autre
             </button>
           </div>
 
-          {showAddManual && (
-            <div className="flex items-center gap-2 mt-2">
-              <input
-                type="text"
-                value={manualName}
-                onChange={(e) => setManualName(e.target.value)}
-                placeholder="Nom"
-                className="flex-1 bg-white border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:border-blue-400 focus:outline-none"
-                autoFocus
-              />
-              <button
-                onClick={() => {
-                  if (manualName.trim()) {
-                    addPerson(manualName.trim());
-                    setManualName("");
-                    setShowAddManual(false);
-                  }
-                }}
-                disabled={!manualName.trim()}
-                className="text-xs bg-blue-500 text-white px-3 py-1.5 rounded-lg hover:bg-blue-600 disabled:opacity-50"
-              >
-                OK
-              </button>
+          {/* Manual person input with autocomplete */}
+          {showManual && (
+            <div className="relative mt-2">
+              <div className="flex items-center gap-2">
+                <input
+                  ref={manualRef}
+                  type="text"
+                  value={manualInput}
+                  onChange={(e) => {
+                    setManualInput(e.target.value);
+                    setShowSuggestions(e.target.value.length >= 2);
+                  }}
+                  onFocus={() => setShowSuggestions(manualInput.length >= 2)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && manualInput.trim()) {
+                      addPerson(manualInput.trim());
+                      setManualInput("");
+                      setShowManual(false);
+                      setShowSuggestions(false);
+                    }
+                  }}
+                  placeholder="Nom de la personne"
+                  className="flex-1 bg-white border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:border-blue-400 focus:outline-none"
+                  autoFocus
+                />
+                <button
+                  onClick={() => {
+                    if (manualInput.trim()) {
+                      addPerson(manualInput.trim());
+                      setManualInput("");
+                      setShowManual(false);
+                      setShowSuggestions(false);
+                    }
+                  }}
+                  disabled={!manualInput.trim()}
+                  className="text-xs bg-blue-500 text-white px-3 py-1.5 rounded-lg hover:bg-blue-600 disabled:opacity-50"
+                >
+                  OK
+                </button>
+              </div>
+              {/* Autocomplete suggestions */}
+              {showSuggestions && suggestions.length > 0 && (
+                <div className="absolute z-10 left-0 right-12 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden">
+                  {suggestions.map((name) => (
+                    <button
+                      key={name}
+                      onClick={() => {
+                        addPerson(name);
+                        setManualInput("");
+                        setShowManual(false);
+                        setShowSuggestions(false);
+                      }}
+                      className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50 transition-colors flex items-center gap-2"
+                    >
+                      <div className="w-5 h-5 rounded-full bg-gray-100 text-gray-600 flex items-center justify-center text-xs">
+                        {name.charAt(0).toUpperCase()}
+                      </div>
+                      {name}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>

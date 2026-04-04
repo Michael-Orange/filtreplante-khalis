@@ -203,6 +203,12 @@ export function WorkspacePage() {
   }
 
   const linkedCount = Object.keys(waveToLinks).length;
+
+  // All allocations across all waves (for autocomplete)
+  const allWaveAllocations = useMemo(() => {
+    if (!session) return [];
+    return session.waveTransactions.flatMap((w) => w.allocations || []);
+  }, [session]);
   const totalWaves = session.waveTransactions.length;
 
   return (
@@ -406,6 +412,7 @@ export function WorkspacePage() {
                             waveAmount={waveAmt}
                             currentProjectId={wave.projectId}
                             currentAllocations={wave.allocations || []}
+                            allWaveAllocations={allWaveAllocations}
                             onChanged={invalidateAll}
                           />
                         )}
