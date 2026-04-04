@@ -5,6 +5,7 @@ import { api } from "../lib/api";
 import { formatCFA, formatDate, formatDateShort } from "../lib/format";
 import { CsvUpload } from "../components/csv-upload";
 import { SummaryBar } from "../components/summary-bar";
+import { WaveMetadata } from "../components/wave-metadata";
 
 interface SessionDetail {
   id: string;
@@ -22,6 +23,8 @@ interface WaveTransaction {
   amount: string;
   counterpartyName: string | null;
   counterpartyMobile: string | null;
+  projectId: string | null;
+  allocations: { name: string; amount: number }[] | null;
 }
 
 interface InvoiceRow {
@@ -83,6 +86,7 @@ export function WorkspacePage() {
   const sessionId = params.id!;
   const queryClient = useQueryClient();
   const [selectedWaveId, setSelectedWaveId] = useState<string | null>(null);
+  const [expandedWaveId, setExpandedWaveId] = useState<string | null>(null);
   const [waveFilter, setWaveFilter] = useState<WaveFilter>("all");
   const [showCashSection, setShowCashSection] = useState(false);
 
@@ -301,51 +305,83 @@ export function WorkspacePage() {
                     const waveAmt = parseFloat(wave.amount);
                     const hasUnusedCredit = isLinked && waveAmt > totalAllocated + 1;
 
+                    const isExpanded = expandedWaveId === wave.id;
+                    const hasMetadata = wave.projectId || (wave.allocations && wave.allocations.length > 0);
+
                     return (
-                      <button
-                        key={wave.id}
-                        onClick={() => setSelectedWaveId(wave.id)}
-                        className={`w-full text-left px-4 py-3 hover:bg-gray-50 transition-colors flex items-center gap-3 ${
-                          selectedWaveId === wave.id ? "bg-pine-light" : ""
-                        }`}
-                      >
-                        {/* Status indicator */}
+                      <div key={wave.id}>
                         <div
-                          className={`w-1.5 self-stretch rounded-full flex-shrink-0 ${
-                            hasUnusedCredit ? "bg-orange-400" : isLinked ? "bg-green-500" : "bg-gray-300"
+                          className={`flex items-center gap-3 ${
+                            selectedWaveId === wave.id ? "bg-pine-light" : ""
                           }`}
-                        />
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs text-gray-500 whitespace-nowrap">
-                              {formatDateShort(wave.transactionDate)}
-                            </span>
-                            <span className="font-medium text-sm text-gray-900">
-                              {formatCFA(parseFloat(wave.amount))}
-                            </span>
-                          </div>
-                          <div className="text-xs text-gray-500 truncate mt-0.5">
-                            {wave.counterpartyName || "—"}
-                          </div>
-                          {isLinked && (
-                            <div className="mt-1 space-y-0.5">
-                              {wLinks.map((link, i) => (
-                                <div key={link.linkId} className={`text-xs truncate ${hasUnusedCredit ? "text-orange-500" : "text-green-600"}`}>
-                                  → {link.supplierName || "—"} · {formatCFA(link.waveAmount)}
-                                  {link.invoiceDate && (
-                                    <span className="opacity-70 ml-1">{formatDateShort(link.invoiceDate)}</span>
-                                  )}
-                                </div>
-                              ))}
-                              {hasUnusedCredit && (
-                                <div className="text-xs text-orange-500 font-medium">
-                                  Surplus: {formatCFA(waveAmt - totalAllocated)}
-                                </div>
+                        >
+                          {/* Status indicator */}
+                          <div
+                            className={`w-1.5 self-stretch rounded-full flex-shrink-0 ml-1 ${
+                              hasUnusedCredit ? "bg-orange-400" : isLinked ? "bg-green-500" : "bg-gray-300"
+                            }`}
+                          />
+                          <button
+                            onClick={() => setSelectedWaveId(wave.id)}
+                            className="flex-1 min-w-0 text-left px-2 py-3 hover:bg-gray-50 transition-colors"
+                          >
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs text-gray-500 whitespace-nowrap">
+                                {formatDateShort(wave.transactionDate)}
+                              </span>
+                              <span className="font-medium text-sm text-gray-900">
+                                {formatCFA(waveAmt)}
+                              </span>
+                              {hasMetadata && (
+                                <span className="text-xs text-blue-500">●</span>
                               )}
                             </div>
-                          )}
+                            <div className="text-xs text-gray-500 truncate mt-0.5">
+                              {wave.counterpartyName || "—"}
+                            </div>
+                            {isLinked && (
+                              <div className="mt-1 space-y-0.5">
+                                {wLinks.map((link) => (
+                                  <div key={link.linkId} className={`text-xs truncate ${hasUnusedCredit ? "text-orange-500" : "text-green-600"}`}>
+                                    → {link.supplierName || "—"} · {formatCFA(link.waveAmount)}
+                                    {link.invoiceDate && (
+                                      <span className="opacity-70 ml-1">{formatDateShort(link.invoiceDate)}</span>
+                                    )}
+                                  </div>
+                                ))}
+                                {hasUnusedCredit && (
+                                  <div className="text-xs text-orange-500 font-medium">
+                                    Surplus: {formatCFA(waveAmt - totalAllocated)}
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </button>
+                          {/* Expand button */}
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setExpandedWaveId(isExpanded ? null : wave.id);
+                            }}
+                            className={`text-gray-300 hover:text-pine p-2 flex-shrink-0 transition-colors ${isExpanded ? "text-pine" : ""}`}
+                            title="Détails"
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <polyline points={isExpanded ? "18 15 12 9 6 15" : "6 9 12 15 18 9"} />
+                            </svg>
+                          </button>
                         </div>
-                      </button>
+                        {/* Expandable metadata panel */}
+                        {isExpanded && (
+                          <WaveMetadata
+                            waveId={wave.id}
+                            waveAmount={waveAmt}
+                            currentProjectId={wave.projectId}
+                            currentAllocations={wave.allocations || []}
+                            onChanged={invalidateAll}
+                          />
+                        )}
+                      </div>
                     );
                   })}
                 </div>

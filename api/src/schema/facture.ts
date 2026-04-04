@@ -52,6 +52,13 @@ export const payments = factureSchema.table("payments", {
   createdAt: timestamp("created_at").notNull(),
 });
 
+export const projects = factureSchema.table("projects", {
+  id: varchar("id").primaryKey(),
+  number: text("number").notNull(),
+  name: text("name").notNull(),
+  isCompleted: boolean("is_completed"),
+});
+
 export const categories = factureSchema.table("categories", {
   id: serial("id").primaryKey(),
   appName: varchar("app_name", { length: 255 }).notNull(),
