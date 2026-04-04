@@ -181,6 +181,12 @@ export function WorkspacePage() {
     return invoices.filter((inv) => inv.reconStatus === "pending");
   }, [invoices]);
 
+  // All allocations across all waves (for autocomplete) — must be before conditional returns
+  const allWaveAllocations = useMemo(() => {
+    if (!session) return [];
+    return session.waveTransactions.flatMap((w) => w.allocations || []);
+  }, [session]);
+
   const invalidateAll = () => {
     queryClient.invalidateQueries({ queryKey: ["invoices", sessionId] });
     queryClient.invalidateQueries({ queryKey: ["summary", sessionId] });
@@ -203,12 +209,6 @@ export function WorkspacePage() {
   }
 
   const linkedCount = Object.keys(waveToLinks).length;
-
-  // All allocations across all waves (for autocomplete)
-  const allWaveAllocations = useMemo(() => {
-    if (!session) return [];
-    return session.waveTransactions.flatMap((w) => w.allocations || []);
-  }, [session]);
   const totalWaves = session.waveTransactions.length;
 
   return (
@@ -364,9 +364,9 @@ export function WorkspacePage() {
                                 {formatCFA(waveAmt)}
                               </span>
                               {hasMetadata && (
-                                <span className="inline-flex items-center gap-0.5 text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded font-medium">
+                                <span className="inline-flex items-center gap-0.5 text-xs bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded font-medium">
                                   <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-                                  Facture
+                                  Facture à créer
                                 </span>
                               )}
                             </div>
