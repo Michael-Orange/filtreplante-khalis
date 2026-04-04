@@ -20,6 +20,7 @@ export const sessions = khalisSchema.table("sessions", {
   dateEnd: date("date_end").notNull(),
   status: varchar("status", { length: 20 }).notNull().default("en_cours"),
   createdBy: text("created_by").notNull(),
+  archived: boolean("archived").default(false),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 

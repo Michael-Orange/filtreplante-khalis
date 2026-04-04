@@ -18,9 +18,11 @@ const createSessionSchema = z.object({
   dateEnd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
 });
 
-// List all sessions
+// List sessions (archived hidden unless ?showArchived=true and user is admin)
 app.get("/", async (c) => {
   const db = createDb(c.env.DATABASE_URL);
+  const user = c.get("user" as never) as any;
+  const showArchived = c.req.query("showArchived") === "true" && user?.role === "admin";
 
   const allSessions = await db
     .select({
@@ -29,12 +31,14 @@ app.get("/", async (c) => {
       dateStart: sessions.dateStart,
       dateEnd: sessions.dateEnd,
       status: sessions.status,
+      archived: sessions.archived,
       createdBy: sessions.createdBy,
       createdAt: sessions.createdAt,
       waveCount: sql<number>`(SELECT COUNT(*) FROM khalis.wave_transactions WHERE session_id = ${sessions.id})::int`,
       linkCount: sql<number>`(SELECT COUNT(DISTINCT invoice_id) FROM khalis.reconciliation_links WHERE session_id = ${sessions.id})::int`,
     })
     .from(sessions)
+    .where(showArchived ? undefined : eq(sessions.archived, false))
     .orderBy(desc(sessions.createdAt));
 
   return c.json(allSessions);
@@ -105,6 +109,7 @@ app.patch("/:id", async (c) => {
 
   const updates: Record<string, any> = {};
   if (body.status) updates.status = body.status;
+  if (typeof body.archived === "boolean") updates.archived = body.archived;
   if (body.dateStart) updates.dateStart = body.dateStart;
   if (body.dateEnd) updates.dateEnd = body.dateEnd;
   if (body.label) updates.label = body.label;

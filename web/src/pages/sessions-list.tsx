@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
+import { useAuth } from "../hooks/useAuth";
 import { api } from "../lib/api";
 import { formatDate } from "../lib/format";
 
@@ -10,6 +11,7 @@ interface Session {
   dateStart: string;
   dateEnd: string;
   status: string;
+  archived: boolean;
   createdBy: string;
   createdAt: string;
   waveCount: number;
@@ -39,14 +41,19 @@ function getMonthOptions() {
 
 export function SessionsListPage() {
   const [, navigate] = useLocation();
+  const { isAdmin } = useAuth();
   const queryClient = useQueryClient();
   const [showCreate, setShowCreate] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
   const monthOptions = getMonthOptions();
   const [selectedMonth, setSelectedMonth] = useState(1);
 
   const { data: sessions, isLoading } = useQuery({
-    queryKey: ["sessions"],
-    queryFn: () => api.get<Session[]>("/api/sessions"),
+    queryKey: ["sessions", showArchived],
+    queryFn: () =>
+      api.get<Session[]>(
+        `/api/sessions${showArchived ? "?showArchived=true" : ""}`
+      ),
   });
 
   const createMutation = useMutation({
@@ -65,11 +72,24 @@ export function SessionsListPage() {
     },
   });
 
+  const archiveMutation = useMutation({
+    mutationFn: (data: { id: string; archived: boolean }) =>
+      api.patch(`/api/sessions/${data.id}`, { archived: data.archived }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["sessions"] });
+    },
+  });
+
   const handleDelete = (e: React.MouseEvent, id: string, label: string) => {
     e.stopPropagation();
     if (confirm(`Supprimer la session "${label}" et tous ses rapprochements ?`)) {
       deleteMutation.mutate(id);
     }
+  };
+
+  const handleArchive = (e: React.MouseEvent, id: string, currentlyArchived: boolean) => {
+    e.stopPropagation();
+    archiveMutation.mutate({ id, archived: !currentlyArchived });
   };
 
   const handleCreate = () => {
@@ -83,16 +103,30 @@ export function SessionsListPage() {
 
   return (
     <div className="max-w-2xl mx-auto p-4">
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-4">
         <h2 className="font-heading font-semibold text-xl text-gray-900">
           Sessions de rapprochement
         </h2>
-        <button
-          onClick={() => setShowCreate(!showCreate)}
-          className="btn-primary text-sm !px-4 !py-2 !min-h-0"
-        >
-          + Nouveau
-        </button>
+        <div className="flex items-center gap-2">
+          {isAdmin && (
+            <button
+              onClick={() => setShowArchived(!showArchived)}
+              className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${
+                showArchived
+                  ? "bg-gray-100 text-gray-700 border-gray-300"
+                  : "text-gray-400 border-gray-200 hover:border-gray-300"
+              }`}
+            >
+              {showArchived ? "Masquer archivées" : "Voir archivées"}
+            </button>
+          )}
+          <button
+            onClick={() => setShowCreate(!showCreate)}
+            className="btn-primary text-sm !px-4 !py-2 !min-h-0"
+          >
+            + Nouveau
+          </button>
+        </div>
       </div>
 
       {showCreate && (
@@ -141,22 +175,37 @@ export function SessionsListPage() {
             <div
               key={s.id}
               onClick={() => navigate(`/sessions/${s.id}`)}
-              className="card w-full text-left hover:border-pine/30 transition-colors cursor-pointer"
+              className={`card w-full text-left hover:border-pine/30 transition-colors cursor-pointer ${s.archived ? "opacity-50" : ""}`}
             >
               <div className="flex items-center justify-between mb-1">
                 <span className="font-heading font-medium text-gray-900">
                   {s.label}
                 </span>
                 <div className="flex items-center gap-2">
-                  <span
-                    className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                      s.status === "termine"
-                        ? "bg-green-100 text-green-700"
-                        : "bg-orange-100 text-orange-700"
-                    }`}
+                  {s.archived && (
+                    <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-gray-100 text-gray-500">
+                      Archivé
+                    </span>
+                  )}
+                  {!s.archived && (
+                    <span
+                      className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                        s.status === "termine"
+                          ? "bg-green-100 text-green-700"
+                          : "bg-orange-100 text-orange-700"
+                      }`}
+                    >
+                      {s.status === "termine" ? "Terminé" : "En cours"}
+                    </span>
+                  )}
+                  <button
+                    onClick={(e) => handleArchive(e, s.id, s.archived)}
+                    disabled={archiveMutation.isPending}
+                    className="text-gray-300 hover:text-gray-500 transition-colors p-1"
+                    title={s.archived ? "Désarchiver" : "Archiver"}
                   >
-                    {s.status === "termine" ? "Terminé" : "En cours"}
-                  </span>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="21 8 21 21 3 21 3 8"/><rect x="1" y="3" width="22" height="5"/><line x1="10" y1="12" x2="14" y2="12"/></svg>
+                  </button>
                   <button
                     onClick={(e) => handleDelete(e, s.id, s.label)}
                     disabled={deleteMutation.isPending}
