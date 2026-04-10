@@ -1119,9 +1119,39 @@ function ResumeTab({
     .slice()
     .sort((a, b) => a.transactionDate.localeCompare(b.transactionDate));
 
-  for (const wave of sortedWavesForLink) {
-    let targetPerson: string | null = null;
+  // Helper : lier un montant à une facture (mute personFactureIndex)
+  const linkToFacture = (
+    factureKey: string,
+    wave: WaveTransaction,
+    desired: number,
+  ): number => {
+    // Cherche la facture dans l'index pour recupérer `remaining`
+    for (const arr of personFactureIndex.values()) {
+      for (const f of arr) {
+        if (f.factureKey === factureKey) {
+          const linkAmount = Math.min(desired, f.remaining);
+          if (linkAmount <= 0) return 0;
+          f.remaining -= linkAmount;
+          if (!linkedByFactureKey.has(factureKey)) {
+            linkedByFactureKey.set(factureKey, []);
+          }
+          linkedByFactureKey.get(factureKey)!.push({
+            waveId: wave.id,
+            date: wave.transactionDate,
+            counterparty: wave.counterpartyName,
+            amount: linkAmount,
+          });
+          return linkAmount;
+        }
+      }
+    }
+    return 0;
+  };
 
+  for (const wave of sortedWavesForLink) {
+    // Priorité 1 : counterparty startsWith match → verse tout le wave
+    // sur les factures de la personne matchée (distribuées par clé alpha).
+    let targetPerson: string | null = null;
     if (wave.counterpartyName) {
       const firstToken = wave.counterpartyName.trim().split(/\s+/)[0] || "";
       if (firstToken.length >= 2) {
@@ -1134,55 +1164,42 @@ function ResumeTab({
       }
     }
 
-    if (!targetPerson && wave.allocations && wave.allocations[0]) {
-      const firstChev = wave.allocations[0].name;
-      if (personFactureIndex.has(firstChev)) {
-        targetPerson = firstChev;
+    if (targetPerson) {
+      const factures = personFactureIndex.get(targetPerson)!;
+      const ordered = factures
+        .slice()
+        .sort((a, b) => a.factureKey.localeCompare(b.factureKey));
+      let waveRemaining = Number(wave.amount);
+      for (const f of ordered) {
+        if (waveRemaining <= 0) break;
+        const linked = linkToFacture(f.factureKey, wave, waveRemaining);
+        waveRemaining -= linked;
       }
-    }
-
-    if (!targetPerson) {
-      for (const [personName, factures] of personFactureIndex) {
-        if (factures.some((f) => f.remaining > 0)) {
-          targetPerson = personName;
-          break;
-        }
-      }
-    }
-
-    if (!targetPerson) {
-      totalWaveUnlinked += Number(wave.amount);
+      if (waveRemaining > 0) totalWaveUnlinked += waveRemaining;
       continue;
     }
 
-    const factures = personFactureIndex.get(targetPerson)!;
-    const ordered = factures
-      .slice()
-      .sort((a, b) => a.factureKey.localeCompare(b.factureKey));
-
+    // Fallback : pas de counterparty match → suivre le chevron fidèlement.
+    // Chaque ligne d'allocation { name, amount } du chevron devient un
+    // lien direct vers la facture (wave.projectId, alloc.name).
+    if (!wave.projectId || !wave.allocations || wave.allocations.length === 0) {
+      totalWaveUnlinked += Number(wave.amount);
+      continue;
+    }
     let waveRemaining = Number(wave.amount);
-    for (const f of ordered) {
+    for (const alloc of wave.allocations) {
       if (waveRemaining <= 0) break;
-      if (f.remaining <= 0) continue;
-      const linkAmount = Math.min(waveRemaining, f.remaining);
-      const ref = factures.find((x) => x.factureKey === f.factureKey)!;
-      ref.remaining -= linkAmount;
-      waveRemaining -= linkAmount;
-
-      if (!linkedByFactureKey.has(f.factureKey)) {
-        linkedByFactureKey.set(f.factureKey, []);
+      const factureKey = `${wave.projectId}|${alloc.name}`;
+      const desired = Math.min(alloc.amount, waveRemaining);
+      const linked = linkToFacture(factureKey, wave, desired);
+      waveRemaining -= linked;
+      // Si linked < desired c'est que la facture est déjà saturée
+      // par d'autres waves → la différence est perdue (priorité #1).
+      if (linked < desired) {
+        totalWaveUnlinked += desired - linked;
       }
-      linkedByFactureKey.get(f.factureKey)!.push({
-        waveId: wave.id,
-        date: wave.transactionDate,
-        counterparty: wave.counterpartyName,
-        amount: linkAmount,
-      });
     }
-
-    if (waveRemaining > 0) {
-      totalWaveUnlinked += waveRemaining;
-    }
+    if (waveRemaining > 0) totalWaveUnlinked += waveRemaining;
   }
 
   // ─── Merged project map (wave + cash) for section 3 ─────────
