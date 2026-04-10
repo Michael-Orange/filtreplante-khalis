@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
 import { api } from "../lib/api";
@@ -25,6 +25,21 @@ interface WaveTransaction {
   counterpartyMobile: string | null;
   projectId: string | null;
   allocations: { name: string; amount: number }[] | null;
+}
+
+interface CashAllocation {
+  id: string;
+  sessionId: string;
+  projectId: string;
+  personName: string;
+  amount: string;
+}
+
+interface Project {
+  id: string;
+  number?: string;
+  name: string;
+  isCompleted?: boolean | null;
 }
 
 interface InvoiceRow {
@@ -284,7 +299,7 @@ export function WorkspacePage() {
 
       {/* Resume tab */}
       {dataReady && activeTab === "resume" && (
-        <ResumeTab waves={session.waveTransactions} projects={[]} sessionId={sessionId} />
+        <ResumeTab waves={session.waveTransactions} sessionId={sessionId} />
       )}
 
       {/* Main content — Wave-centric view */}
@@ -364,9 +379,9 @@ export function WorkspacePage() {
                                 {formatCFA(waveAmt)}
                               </span>
                               {hasMetadata && (
-                                <span className="inline-flex items-center gap-0.5 text-xs bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded font-medium">
+                                <span className="ml-auto inline-flex items-center gap-0.5 text-xs bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded font-medium">
                                   <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-                                  Facture à créer
+                                  Réglement facture d'équipe
                                 </span>
                               )}
                             </div>
@@ -890,13 +905,62 @@ function ResumeTab({
   sessionId,
 }: {
   waves: WaveTransaction[];
-  projects: any[];
   sessionId: string;
 }) {
+  const queryClient = useQueryClient();
+
   const { data: projects } = useQuery({
     queryKey: ["projects"],
-    queryFn: () => api.get<{ id: string; name: string }[]>("/api/metadata/projects"),
+    queryFn: () => api.get<Project[]>("/api/metadata/projects"),
     staleTime: 5 * 60_000,
+  });
+
+  const { data: cashAllocations = [] } = useQuery({
+    queryKey: ["cash", sessionId],
+    queryFn: () => api.get<CashAllocation[]>(`/api/cash/${sessionId}`),
+  });
+
+  const { data: persons = [] } = useQuery({
+    queryKey: ["persons"],
+    queryFn: () => api.get<{ name: string }[]>("/api/metadata/persons"),
+    staleTime: 5 * 60_000,
+  });
+
+  const [pendingManualProjectIds, setPendingManualProjectIds] = useState<string[]>([]);
+
+  const invalidateCash = () =>
+    queryClient.invalidateQueries({ queryKey: ["cash", sessionId] });
+
+  const createCashMutation = useMutation({
+    mutationFn: (body: {
+      projectId: string;
+      personName: string;
+      amount: number;
+    }) =>
+      api.post<CashAllocation>("/api/cash", {
+        sessionId,
+        projectId: body.projectId,
+        personName: body.personName,
+        amount: body.amount,
+      }),
+    onSuccess: () => invalidateCash(),
+  });
+
+  const updateCashMutation = useMutation({
+    mutationFn: ({ id, amount }: { id: string; amount: number }) =>
+      api.patch<CashAllocation>(`/api/cash/${id}`, { amount }),
+    onSuccess: () => invalidateCash(),
+  });
+
+  const deleteCashLineMutation = useMutation({
+    mutationFn: (id: string) => api.delete(`/api/cash/${id}`),
+    onSuccess: () => invalidateCash(),
+  });
+
+  const deleteCashBlockMutation = useMutation({
+    mutationFn: (projectId: string) =>
+      api.delete(`/api/cash/session/${sessionId}/project/${projectId}`),
+    onSuccess: () => invalidateCash(),
   });
 
   // Build summary from wave metadata
@@ -904,7 +968,7 @@ function ResumeTab({
     (w) => w.projectId || (w.allocations && w.allocations.length > 0)
   );
 
-  // Group by project
+  // Group by project (wave side)
   const projectMap = new Map<string, {
     projectName: string;
     persons: Map<string, number>;
@@ -941,17 +1005,108 @@ function ResumeTab({
     }
   }
 
-  // Also build per-person summary across all projects
+  // Per-person summary across wave
   const personTotals = new Map<string, number>();
   for (const [, group] of projectMap) {
     for (const [name, amount] of group.persons) {
       personTotals.set(name, (personTotals.get(name) || 0) + amount);
     }
   }
+  const waveGrandTotal = Array.from(personTotals.values()).reduce((s, a) => s + a, 0);
 
-  const grandTotal = Array.from(personTotals.values()).reduce((s, a) => s + a, 0);
+  // ─── Cash blocks ─────────────────────────────────────
+  const waveProjectIds = new Set<string>(
+    wavesWithMeta
+      .map((w) => w.projectId)
+      .filter((id): id is string => !!id)
+  );
+  const cashProjectIds = new Set(cashAllocations.map((c) => c.projectId));
+  const blockProjectIds = Array.from(
+    new Set<string>([
+      ...Array.from(waveProjectIds),
+      ...Array.from(cashProjectIds),
+      ...pendingManualProjectIds,
+    ])
+  );
 
-  if (wavesWithMeta.length === 0) {
+  const cashBlocks = blockProjectIds
+    .map((pid) => {
+      const lines = cashAllocations.filter((c) => c.projectId === pid);
+      const projName =
+        projects?.find((p) => p.id === pid)?.name || "Projet inconnu";
+      const isManual = !waveProjectIds.has(pid);
+      const total = lines.reduce((s, l) => s + Number(l.amount), 0);
+      return {
+        projectId: pid,
+        projectName: projName,
+        lines,
+        isManual,
+        hasPersistedLines: lines.length > 0,
+        total,
+      };
+    })
+    // Wave-origin blocks first (stable), then manual
+    .sort((a, b) => {
+      if (a.isManual === b.isManual) return a.projectName.localeCompare(b.projectName);
+      return a.isManual ? 1 : -1;
+    });
+
+  const availableProjectsForAdd = (projects || []).filter(
+    (p) => !blockProjectIds.includes(p.id)
+  );
+
+  const handleDeleteBlock = (projectId: string, hasPersisted: boolean) => {
+    if (hasPersisted) {
+      deleteCashBlockMutation.mutate(projectId);
+    }
+    setPendingManualProjectIds((prev) => prev.filter((id) => id !== projectId));
+  };
+
+  // ─── Merged project map (wave + cash) for section 3 ─────────
+  type MergedPerson = { wave: number; caisse: number };
+  const mergedProjectMap = new Map<string, {
+    projectName: string;
+    persons: Map<string, MergedPerson>;
+    waveTotal: number;
+    cashTotal: number;
+    waveCount: number;
+  }>();
+
+  // Seed from wave projectMap
+  for (const [pid, g] of projectMap) {
+    const persons = new Map<string, MergedPerson>();
+    for (const [name, amount] of g.persons) {
+      persons.set(name, { wave: amount, caisse: 0 });
+    }
+    mergedProjectMap.set(pid, {
+      projectName: g.projectName,
+      persons,
+      waveTotal: g.totalAmount,
+      cashTotal: 0,
+      waveCount: g.waveCount,
+    });
+  }
+
+  // Add cash allocations
+  for (const c of cashAllocations) {
+    const pid = c.projectId;
+    if (!mergedProjectMap.has(pid)) {
+      mergedProjectMap.set(pid, {
+        projectName: projects?.find((p) => p.id === pid)?.name || "Projet inconnu",
+        persons: new Map(),
+        waveTotal: 0,
+        cashTotal: 0,
+        waveCount: 0,
+      });
+    }
+    const entry = mergedProjectMap.get(pid)!;
+    const existing = entry.persons.get(c.personName) || { wave: 0, caisse: 0 };
+    existing.caisse += Number(c.amount);
+    entry.persons.set(c.personName, existing);
+    entry.cashTotal += Number(c.amount);
+  }
+
+  if (wavesWithMeta.length === 0 && cashAllocations.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center text-gray-400 text-sm p-8">
         <div className="text-center">
@@ -967,10 +1122,10 @@ function ResumeTab({
 
   return (
     <div className="flex-1 overflow-y-auto">
-      {/* Per-person summary */}
+      {/* Section 1 — Réglements wave par personne */}
       <div className="p-4">
         <h3 className="font-heading font-semibold text-gray-900 mb-3">
-          Récapitulatif par personne
+          Réglements wave par personne
         </h3>
         <div className="bg-white rounded-xl border border-gray-200 divide-y">
           {Array.from(personTotals.entries())
@@ -990,36 +1145,89 @@ function ResumeTab({
             ))}
           <div className="flex items-center justify-between px-4 py-3 bg-gray-50">
             <span className="text-sm font-semibold text-gray-700">Total</span>
-            <span className="text-sm font-bold text-gray-900">{formatCFA(grandTotal)}</span>
+            <span className="text-sm font-bold text-gray-900">{formatCFA(waveGrandTotal)}</span>
           </div>
         </div>
       </div>
 
-      {/* Per-project breakdown */}
+      {/* Section 2 — Réglements Caisse Fatou par personne */}
+      <div className="p-4 pt-0">
+        <h3 className="font-heading font-semibold text-gray-900 mb-3">
+          Réglements Caisse Fatou par personne
+        </h3>
+        <div className="space-y-3">
+          {cashBlocks.map((block) => (
+            <CashProjectBlock
+              key={block.projectId}
+              projectId={block.projectId}
+              projectName={block.projectName}
+              lines={block.lines}
+              total={block.total}
+              isManual={block.isManual}
+              persons={persons}
+              onAddPerson={(name) =>
+                createCashMutation.mutate({
+                  projectId: block.projectId,
+                  personName: name,
+                  amount: 0,
+                })
+              }
+              onUpdateAmount={(id, amount) =>
+                updateCashMutation.mutate({ id, amount })
+              }
+              onDeleteLine={(id) => deleteCashLineMutation.mutate(id)}
+              onDeleteBlock={() =>
+                handleDeleteBlock(block.projectId, block.hasPersistedLines)
+              }
+            />
+          ))}
+          {availableProjectsForAdd.length > 0 && (
+            <AddProjectButton
+              availableProjects={availableProjectsForAdd}
+              onAdd={(projectId) =>
+                setPendingManualProjectIds((prev) =>
+                  prev.includes(projectId) ? prev : [...prev, projectId]
+                )
+              }
+            />
+          )}
+        </div>
+      </div>
+
+      {/* Section 3 — Détail par projet (fusion wave + caisse) */}
       <div className="p-4 pt-0">
         <h3 className="font-heading font-semibold text-gray-900 mb-3">
           Détail par projet
         </h3>
         <div className="space-y-3">
-          {Array.from(projectMap.entries()).map(([projId, group]) => (
+          {Array.from(mergedProjectMap.entries()).map(([projId, group]) => (
             <div key={projId} className="bg-white rounded-xl border border-gray-200">
-              <div className="px-4 py-3 border-b bg-gray-50 rounded-t-xl flex items-center justify-between">
-                <div>
-                  <span className="text-sm font-medium text-gray-900">
-                    {group.projectName}
+              <div className="px-4 py-3 border-b bg-gray-50 rounded-t-xl">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <span className="text-sm font-medium text-gray-900">
+                      {group.projectName}
+                    </span>
+                    {group.waveCount > 0 && (
+                      <span className="text-xs text-gray-500 ml-2">
+                        ({group.waveCount} transaction{group.waveCount > 1 ? "s" : ""} Wave)
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div className="flex gap-4 mt-1 text-xs">
+                  <span className="text-blue-700">
+                    Wave : <span className="font-semibold">{formatCFA(group.waveTotal)}</span>
                   </span>
-                  <span className="text-xs text-gray-500 ml-2">
-                    ({group.waveCount} transaction{group.waveCount > 1 ? "s" : ""})
+                  <span className="text-amber-700">
+                    Caisse : <span className="font-semibold">{formatCFA(group.cashTotal)}</span>
                   </span>
                 </div>
-                <span className="text-sm font-semibold text-gray-900">
-                  {formatCFA(group.totalAmount)}
-                </span>
               </div>
               <div className="divide-y">
                 {Array.from(group.persons.entries())
-                  .sort((a, b) => b[1] - a[1])
-                  .map(([name, amount]) => (
+                  .sort((a, b) => (b[1].wave + b[1].caisse) - (a[1].wave + a[1].caisse))
+                  .map(([name, amounts]) => (
                     <div key={name} className="flex items-center justify-between px-4 py-2.5">
                       <div className="flex items-center gap-2">
                         <div className="w-6 h-6 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center text-xs font-semibold">
@@ -1027,7 +1235,20 @@ function ResumeTab({
                         </div>
                         <span className="text-sm text-gray-700">{name}</span>
                       </div>
-                      <span className="text-sm text-gray-900">{formatCFA(amount)}</span>
+                      <div className="flex gap-3 text-xs">
+                        <div className="text-right">
+                          <div className="text-gray-400">Wave</div>
+                          <div className="text-sm text-blue-700 font-medium">
+                            {amounts.wave > 0 ? formatCFA(amounts.wave) : "—"}
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <div className="text-gray-400">Caisse</div>
+                          <div className="text-sm text-amber-700 font-medium">
+                            {amounts.caisse > 0 ? formatCFA(amounts.caisse) : "—"}
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   ))}
               </div>
@@ -1035,6 +1256,277 @@ function ResumeTab({
           ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─── CashProjectBlock ───────────────────────────────────────
+
+function CashProjectBlock({
+  projectId,
+  projectName,
+  lines,
+  total,
+  isManual,
+  persons,
+  onAddPerson,
+  onUpdateAmount,
+  onDeleteLine,
+  onDeleteBlock,
+}: {
+  projectId: string;
+  projectName: string;
+  lines: CashAllocation[];
+  total: number;
+  isManual: boolean;
+  persons: { name: string }[];
+  onAddPerson: (name: string) => void;
+  onUpdateAmount: (id: string, amount: number) => void;
+  onDeleteLine: (id: string) => void;
+  onDeleteBlock: () => void;
+}) {
+  const [showManual, setShowManual] = useState(false);
+  const [manualInput, setManualInput] = useState("");
+
+  const usedNames = new Set(lines.map((l) => l.personName));
+  const availablePersons = persons.filter((p) => !usedNames.has(p.name));
+
+  const handleAddCustom = () => {
+    const trimmed = manualInput.trim();
+    if (!trimmed) return;
+    onAddPerson(trimmed);
+    setManualInput("");
+    setShowManual(false);
+  };
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200">
+      <div className="px-4 py-3 border-b bg-gray-50 rounded-t-xl flex items-center justify-between">
+        <div>
+          <span className="text-sm font-medium text-gray-900">{projectName}</span>
+          {isManual && (
+            <span className="text-xs text-amber-600 ml-2">(ajouté manuellement)</span>
+          )}
+        </div>
+        <div className="flex items-center gap-3">
+          <span className="text-sm font-semibold text-gray-900">{formatCFA(total)}</span>
+          {isManual && (
+            <button
+              onClick={() => {
+                if (lines.length === 0 || confirm(`Supprimer le bloc « ${projectName} » et toutes ses lignes ?`)) {
+                  onDeleteBlock();
+                }
+              }}
+              className="text-gray-400 hover:text-red-500 transition-colors"
+              title="Supprimer le bloc"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/>
+              </svg>
+            </button>
+          )}
+        </div>
+      </div>
+      <div className="divide-y">
+        {lines.length === 0 && (
+          <div className="px-4 py-3 text-xs text-gray-400 italic">
+            Aucune ligne — ajouter une personne ci-dessous
+          </div>
+        )}
+        {lines
+          .slice()
+          .sort((a, b) => a.personName.localeCompare(b.personName))
+          .map((line) => (
+            <CashLineRow
+              key={line.id}
+              line={line}
+              onUpdateAmount={onUpdateAmount}
+              onDelete={onDeleteLine}
+            />
+          ))}
+      </div>
+      <div className="p-3 border-t bg-gray-50 rounded-b-xl space-y-2">
+        <div className="flex items-center gap-2">
+          {availablePersons.length > 0 && (
+            <select
+              value=""
+              onChange={(e) => {
+                if (e.target.value) {
+                  onAddPerson(e.target.value);
+                }
+              }}
+              className="flex-1 bg-white border border-dashed border-gray-300 rounded-lg px-3 py-1.5 text-sm text-gray-500 focus:border-blue-400 focus:outline-none"
+            >
+              <option value="" disabled>
+                + Ajouter une personne
+              </option>
+              {availablePersons.map((p) => (
+                <option key={p.name} value={p.name}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          )}
+          <button
+            onClick={() => {
+              setShowManual(!showManual);
+              setManualInput("");
+            }}
+            className="text-xs text-blue-500 hover:text-blue-700 whitespace-nowrap font-medium"
+          >
+            + Autre
+          </button>
+        </div>
+        {showManual && (
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={manualInput}
+              onChange={(e) => setManualInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleAddCustom();
+              }}
+              placeholder="Nom de la personne"
+              className="flex-1 bg-white border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:border-blue-400 focus:outline-none"
+              autoFocus
+            />
+            <button
+              onClick={handleAddCustom}
+              disabled={!manualInput.trim()}
+              className="text-xs bg-blue-500 text-white px-3 py-1.5 rounded-lg hover:bg-blue-600 disabled:opacity-50"
+            >
+              OK
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── CashLineRow ────────────────────────────────────────────
+
+function CashLineRow({
+  line,
+  onUpdateAmount,
+  onDelete,
+}: {
+  line: CashAllocation;
+  onUpdateAmount: (id: string, amount: number) => void;
+  onDelete: (id: string) => void;
+}) {
+  const [value, setValue] = useState(line.amount);
+
+  // Sync external updates (e.g. after refetch)
+  useEffect(() => {
+    setValue(line.amount);
+  }, [line.amount]);
+
+  const commit = () => {
+    const num = Number(value);
+    if (isNaN(num) || num < 0) {
+      setValue(line.amount);
+      return;
+    }
+    if (num.toString() !== Number(line.amount).toString()) {
+      onUpdateAmount(line.id, num);
+    }
+  };
+
+  return (
+    <div className="flex items-center justify-between px-4 py-2.5">
+      <div className="flex items-center gap-2">
+        <div className="w-6 h-6 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center text-xs font-semibold">
+          {line.personName.charAt(0).toUpperCase()}
+        </div>
+        <span className="text-sm text-gray-700">{line.personName}</span>
+      </div>
+      <div className="flex items-center gap-2">
+        <input
+          type="number"
+          inputMode="numeric"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              (e.target as HTMLInputElement).blur();
+            }
+          }}
+          className="w-28 text-right text-sm bg-white border border-gray-200 rounded px-2 py-1 focus:border-blue-400 focus:outline-none"
+        />
+        <span className="text-xs text-gray-500">FCFA</span>
+        <button
+          onClick={() => {
+            if (confirm(`Supprimer ${line.personName} de ce bloc ?`)) {
+              onDelete(line.id);
+            }
+          }}
+          className="text-gray-400 hover:text-red-500 transition-colors"
+          title="Supprimer"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── AddProjectButton ───────────────────────────────────────
+
+function AddProjectButton({
+  availableProjects,
+  onAdd,
+}: {
+  availableProjects: Project[];
+  onAdd: (projectId: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+
+  if (!open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        className="w-full border-2 border-dashed border-gray-300 rounded-xl px-4 py-3 text-sm text-gray-500 hover:border-blue-400 hover:text-blue-600 transition-colors"
+      >
+        + Ajouter un projet
+      </button>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-2">
+      <select
+        value=""
+        onChange={(e) => {
+          if (e.target.value) {
+            onAdd(e.target.value);
+            setOpen(false);
+          }
+        }}
+        className="flex-1 bg-white border border-dashed border-gray-300 rounded-lg px-3 py-2 text-sm text-gray-700 focus:border-blue-400 focus:outline-none"
+        autoFocus
+      >
+        <option value="" disabled>
+          -- Sélectionner un projet --
+        </option>
+        {availableProjects
+          .slice()
+          .sort((a, b) => a.name.localeCompare(b.name))
+          .map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}
+            </option>
+          ))}
+      </select>
+      <button
+        onClick={() => setOpen(false)}
+        className="text-xs text-gray-500 hover:text-gray-700 px-2"
+      >
+        Annuler
+      </button>
     </div>
   );
 }

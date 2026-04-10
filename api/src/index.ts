@@ -9,6 +9,7 @@ import reconcileRoutes from "./routes/reconcile";
 import summaryRoutes from "./routes/summary";
 import autoMatchRoutes from "./routes/auto-match";
 import metadataRoutes from "./routes/metadata";
+import cashRoutes from "./routes/cash";
 import type { Env } from "./types/env";
 
 const app = new Hono<{ Bindings: Env }>();
@@ -33,6 +34,7 @@ app.route("/api/reconcile", reconcileRoutes);
 app.route("/api/summary", summaryRoutes);
 app.route("/api/auto-match", autoMatchRoutes);
 app.route("/api/metadata", metadataRoutes);
+app.route("/api/cash", cashRoutes);
 
 // Health check
 app.get("/health", (c) => {

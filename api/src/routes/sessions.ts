@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import { eq, desc, sql, count } from "drizzle-orm";
+import { eq, desc, sql } from "drizzle-orm";
 import { createDb } from "../lib/db";
 import { AppError } from "../middleware/error";
 import {
@@ -34,14 +34,37 @@ app.get("/", async (c) => {
       archived: sessions.archived,
       createdBy: sessions.createdBy,
       createdAt: sessions.createdAt,
-      waveCount: sql<number>`(SELECT COUNT(*) FROM khalis.wave_transactions WHERE session_id = ${sessions.id})::int`,
-      linkCount: sql<number>`(SELECT COUNT(DISTINCT invoice_id) FROM khalis.reconciliation_links WHERE session_id = ${sessions.id})::int`,
     })
     .from(sessions)
     .where(showArchived ? undefined : eq(sessions.archived, false))
     .orderBy(desc(sessions.createdAt));
 
-  return c.json(allSessions);
+  const waveCounts = await db
+    .select({
+      sessionId: waveTransactions.sessionId,
+      cnt: sql<number>`COUNT(*)::int`,
+    })
+    .from(waveTransactions)
+    .groupBy(waveTransactions.sessionId);
+
+  const linkCounts = await db
+    .select({
+      sessionId: reconciliationLinks.sessionId,
+      cnt: sql<number>`COUNT(DISTINCT ${reconciliationLinks.invoiceId})::int`,
+    })
+    .from(reconciliationLinks)
+    .groupBy(reconciliationLinks.sessionId);
+
+  const waveMap = new Map(waveCounts.map((w) => [w.sessionId, Number(w.cnt)]));
+  const linkMap = new Map(linkCounts.map((l) => [l.sessionId, Number(l.cnt)]));
+
+  return c.json(
+    allSessions.map((s) => ({
+      ...s,
+      waveCount: waveMap.get(s.id) ?? 0,
+      linkCount: linkMap.get(s.id) ?? 0,
+    })),
+  );
 });
 
 // Create session

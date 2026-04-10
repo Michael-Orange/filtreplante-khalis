@@ -6,6 +6,7 @@ import {
   decimal,
   timestamp,
   index,
+  uniqueIndex,
   boolean,
   jsonb,
 } from "drizzle-orm/pg-core";
@@ -46,6 +47,31 @@ export const waveTransactions = khalisSchema.table(
     sessionIdx: index("wave_txn_session_idx").on(table.sessionId),
     tidIdx: index("wave_txn_tid_idx").on(table.transactionId),
   })
+);
+
+// --- Allocations caisse (règlements Fatou en liquide) ---
+export const cashAllocations = khalisSchema.table(
+  "cash_allocations",
+  {
+    id: varchar("id").primaryKey(),
+    sessionId: varchar("session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    projectId: varchar("project_id").notNull(),
+    personName: text("person_name").notNull(),
+    amount: decimal("amount", { precision: 12, scale: 2 })
+      .notNull()
+      .default("0"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    sessionIdx: index("cash_alloc_session_idx").on(table.sessionId),
+    tripleUniq: uniqueIndex("cash_alloc_triple_uniq").on(
+      table.sessionId,
+      table.projectId,
+      table.personName,
+    ),
+  }),
 );
 
 // --- Liens de rapprochement ---
