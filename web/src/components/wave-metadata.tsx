@@ -17,11 +17,13 @@ interface Person {
 interface Allocation {
   name: string;
   amount: number;
+  projectId?: string | null;
 }
 
 interface Props {
   waveId: string;
   waveAmount: number;
+  counterpartyName?: string | null;
   currentProjectId: string | null;
   currentAllocations: Allocation[];
   allWaveAllocations: Allocation[];
@@ -31,6 +33,7 @@ interface Props {
 export function WaveMetadata({
   waveId,
   waveAmount,
+  counterpartyName,
   currentProjectId,
   currentAllocations,
   allWaveAllocations,
@@ -66,6 +69,24 @@ export function WaveMetadata({
     setAllocations(currentAllocations.length > 0 ? currentAllocations : []);
   }, [currentProjectId, currentAllocations]);
 
+  // Priority #2 — Auto-suggest person from counterpartyName when opening a
+  // wave that has no allocations yet. Pre-fills a single allocation with
+  // the matched person and the full wave amount. Not saved until user clicks Save.
+  useEffect(() => {
+    if (currentAllocations.length > 0) return;
+    if (!counterpartyName || !persons || persons.length === 0) return;
+    if (allocations.length > 0) return;
+    const firstToken = counterpartyName.trim().split(/\s+/)[0] || "";
+    if (firstToken.length < 2) return;
+    const match = persons.find(
+      (p) => p.name.toLowerCase().startsWith(firstToken.toLowerCase()),
+    );
+    if (match) {
+      setAllocations([{ name: match.name, amount: waveAmount }]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [counterpartyName, persons, currentAllocations.length]);
+
   const saveMutation = useMutation({
     mutationFn: (data: { projectId: string | null; allocations: Allocation[] }) =>
       api.patch(`/api/metadata/transactions/${waveId}`, data),
@@ -76,9 +97,17 @@ export function WaveMetadata({
   });
 
   const handleSave = () => {
+    // Drop null/undefined projectId entries to keep JSONB minimal and
+    // backward compatible with old allocations that don't have projectId.
+    const cleanedAllocations = allocations
+      .filter((a) => a.amount > 0)
+      .map((a) => {
+        const { projectId: allocPid, ...rest } = a;
+        return allocPid ? { ...rest, projectId: allocPid } : rest;
+      });
     saveMutation.mutate({
       projectId: projectId || null,
-      allocations: allocations.filter((a) => a.amount > 0),
+      allocations: cleanedAllocations,
     });
   };
 
@@ -94,6 +123,17 @@ export function WaveMetadata({
   const updateAmount = (name: string, amount: number) => {
     setAllocations(
       allocations.map((a) => (a.name === name ? { ...a, amount } : a))
+    );
+  };
+
+  const updateAllocProject = (name: string, newProjectId: string) => {
+    // Empty value ("") = use the wave's main project (projectId omitted on save)
+    setAllocations(
+      allocations.map((a) =>
+        a.name === name
+          ? { ...a, projectId: newProjectId ? newProjectId : null }
+          : a,
+      ),
     );
   };
 
@@ -174,56 +214,82 @@ export function WaveMetadata({
 
           {allocations.length > 0 && (
             <div className="bg-white rounded-lg border border-gray-200 divide-y divide-gray-100 mb-2">
-              {allocations.map((alloc) => (
-                <div key={alloc.name} className="flex items-center gap-2 px-3 py-2">
-                  <div className="w-7 h-7 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center text-xs font-semibold flex-shrink-0">
-                    {alloc.name.charAt(0).toUpperCase()}
-                  </div>
-                  {/* Editable name */}
-                  {editingName === alloc.name ? (
-                    <input
-                      type="text"
-                      value={editNameValue}
-                      onChange={(e) => setEditNameValue(e.target.value)}
-                      onBlur={() => renamePerson(alloc.name, editNameValue)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") renamePerson(alloc.name, editNameValue);
-                        if (e.key === "Escape") setEditingName(null);
-                      }}
-                      className="text-sm text-gray-700 w-24 bg-blue-50 border border-blue-300 rounded px-1.5 py-0.5 focus:outline-none"
-                      autoFocus
-                    />
-                  ) : (
-                    <span
-                      onClick={() => {
-                        setEditingName(alloc.name);
-                        setEditNameValue(alloc.name);
-                      }}
-                      className="text-sm text-gray-700 flex-shrink-0 w-24 truncate cursor-pointer hover:text-blue-600 hover:underline"
-                      title="Cliquer pour modifier"
+              {allocations.map((alloc) => {
+                const hasSplitProject = !!alloc.projectId && alloc.projectId !== projectId;
+                return (
+                <div key={alloc.name} className="px-3 py-2 space-y-1.5">
+                  <div className="flex items-center gap-2">
+                    <div className="w-7 h-7 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center text-xs font-semibold flex-shrink-0">
+                      {alloc.name.charAt(0).toUpperCase()}
+                    </div>
+                    {/* Editable name */}
+                    {editingName === alloc.name ? (
+                      <input
+                        type="text"
+                        value={editNameValue}
+                        onChange={(e) => setEditNameValue(e.target.value)}
+                        onBlur={() => renamePerson(alloc.name, editNameValue)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") renamePerson(alloc.name, editNameValue);
+                          if (e.key === "Escape") setEditingName(null);
+                        }}
+                        className="text-sm text-gray-700 w-24 bg-blue-50 border border-blue-300 rounded px-1.5 py-0.5 focus:outline-none"
+                        autoFocus
+                      />
+                    ) : (
+                      <span
+                        onClick={() => {
+                          setEditingName(alloc.name);
+                          setEditNameValue(alloc.name);
+                        }}
+                        className="text-sm text-gray-700 flex-shrink-0 w-24 truncate cursor-pointer hover:text-blue-600 hover:underline"
+                        title="Cliquer pour modifier"
+                      >
+                        {alloc.name}
+                      </span>
+                    )}
+                    <div className="flex-1">
+                      <input
+                        type="number"
+                        value={alloc.amount || ""}
+                        onChange={(e) =>
+                          updateAmount(alloc.name, parseInt(e.target.value) || 0)
+                        }
+                        placeholder="0"
+                        className="w-full bg-gray-50 border border-gray-200 rounded-lg px-3 py-1.5 text-sm text-right focus:border-blue-400 focus:ring-1 focus:ring-blue-400/20 focus:outline-none"
+                      />
+                    </div>
+                    <button
+                      onClick={() => removePerson(alloc.name)}
+                      className="text-gray-300 hover:text-red-500 transition-colors flex-shrink-0"
                     >
-                      {alloc.name}
-                    </span>
-                  )}
-                  <div className="flex-1">
-                    <input
-                      type="number"
-                      value={alloc.amount || ""}
-                      onChange={(e) =>
-                        updateAmount(alloc.name, parseInt(e.target.value) || 0)
-                      }
-                      placeholder="0"
-                      className="w-full bg-gray-50 border border-gray-200 rounded-lg px-3 py-1.5 text-sm text-right focus:border-blue-400 focus:ring-1 focus:ring-blue-400/20 focus:outline-none"
-                    />
+                      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    </button>
                   </div>
-                  <button
-                    onClick={() => removePerson(alloc.name)}
-                    className="text-gray-300 hover:text-red-500 transition-colors flex-shrink-0"
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                  </button>
+                  {/* Per-allocation project selector (multi-project split) */}
+                  <div className="flex items-center gap-2 pl-9">
+                    <label className={`text-[11px] ${hasSplitProject ? "text-amber-600 font-medium" : "text-gray-400"}`}>
+                      Projet :
+                    </label>
+                    <select
+                      value={alloc.projectId || ""}
+                      onChange={(e) => updateAllocProject(alloc.name, e.target.value)}
+                      className={`text-[11px] bg-transparent border-0 border-b border-dashed px-0 py-0 focus:outline-none focus:border-blue-400 ${
+                        hasSplitProject ? "text-amber-700 border-amber-300" : "text-gray-500 border-gray-200"
+                      }`}
+                    >
+                      <option value="">↳ projet principal du wave</option>
+                      {projects?.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}
+                          {p.isCompleted ? " (terminé)" : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
-              ))}
+                );
+              })}
               {/* Total row */}
               <div className="flex items-center justify-between px-3 py-2 bg-gray-50/50">
                 <span className="text-xs font-medium text-gray-500">Total</span>

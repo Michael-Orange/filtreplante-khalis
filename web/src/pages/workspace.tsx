@@ -24,7 +24,7 @@ interface WaveTransaction {
   counterpartyName: string | null;
   counterpartyMobile: string | null;
   projectId: string | null;
-  allocations: { name: string; amount: number }[] | null;
+  allocations: { name: string; amount: number; projectId?: string | null }[] | null;
 }
 
 interface CashAllocation {
@@ -425,6 +425,7 @@ export function WorkspacePage() {
                           <WaveMetadata
                             waveId={wave.id}
                             waveAmount={waveAmt}
+                            counterpartyName={wave.counterpartyName}
                             currentProjectId={wave.projectId}
                             currentAllocations={wave.allocations || []}
                             allWaveAllocations={allWaveAllocations}
@@ -927,6 +928,16 @@ function ResumeTab({
   });
 
   const [pendingManualProjectIds, setPendingManualProjectIds] = useState<string[]>([]);
+  const [expandedFactureKeys, setExpandedFactureKeys] = useState<Set<string>>(new Set());
+
+  const toggleFactureExpand = (key: string) => {
+    setExpandedFactureKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
 
   const invalidateCash = () =>
     queryClient.invalidateQueries({ queryKey: ["cash", sessionId] });
@@ -968,57 +979,72 @@ function ResumeTab({
     (w) => w.projectId || (w.allocations && w.allocations.length > 0)
   );
 
-  // Group by project (wave side)
+  type ContributingWave = {
+    waveId: string;
+    date: string;
+    counterparty: string | null;
+    amount: number;
+  };
+
+  // Group by effective project (alloc.projectId || wave.projectId) × person
+  // Each allocation entry may target a different project than wave.projectId
+  // → 1 wave can contribute to multiple factures (multi-project split).
   const projectMap = new Map<string, {
     projectName: string;
-    persons: Map<string, number>;
+    persons: Map<string, { amount: number; contributingWaves: ContributingWave[] }>;
     totalAmount: number;
-    waveCount: number;
+    waveIds: Set<string>;
   }>();
 
   for (const w of wavesWithMeta) {
-    const projId = w.projectId || "__none__";
-    const projName =
-      w.projectId && projects
-        ? projects.find((p) => p.id === w.projectId)?.name || "Projet inconnu"
-        : "Sans projet";
+    if (!w.allocations || w.allocations.length === 0) continue;
+    for (const alloc of w.allocations) {
+      const effectivePid = alloc.projectId || w.projectId || "__none__";
+      const projName =
+        effectivePid !== "__none__" && projects
+          ? projects.find((p) => p.id === effectivePid)?.name || "Projet inconnu"
+          : "Sans projet";
 
-    if (!projectMap.has(projId)) {
-      projectMap.set(projId, {
-        projectName: projName,
-        persons: new Map(),
-        totalAmount: 0,
-        waveCount: 0,
-      });
-    }
-    const group = projectMap.get(projId)!;
-    group.waveCount++;
-
-    if (w.allocations) {
-      for (const alloc of w.allocations) {
-        group.persons.set(
-          alloc.name,
-          (group.persons.get(alloc.name) || 0) + alloc.amount
-        );
-        group.totalAmount += alloc.amount;
+      if (!projectMap.has(effectivePid)) {
+        projectMap.set(effectivePid, {
+          projectName: projName,
+          persons: new Map(),
+          totalAmount: 0,
+          waveIds: new Set(),
+        });
       }
+      const group = projectMap.get(effectivePid)!;
+      group.waveIds.add(w.id);
+      group.totalAmount += alloc.amount;
+
+      const personEntry = group.persons.get(alloc.name) || {
+        amount: 0,
+        contributingWaves: [],
+      };
+      personEntry.amount += alloc.amount;
+      personEntry.contributingWaves.push({
+        waveId: w.id,
+        date: w.transactionDate,
+        counterparty: w.counterpartyName,
+        amount: alloc.amount,
+      });
+      group.persons.set(alloc.name, personEntry);
     }
   }
 
   // Per-person summary across wave
   const personTotals = new Map<string, number>();
   for (const [, group] of projectMap) {
-    for (const [name, amount] of group.persons) {
-      personTotals.set(name, (personTotals.get(name) || 0) + amount);
+    for (const [name, entry] of group.persons) {
+      personTotals.set(name, (personTotals.get(name) || 0) + entry.amount);
     }
   }
   const waveGrandTotal = Array.from(personTotals.values()).reduce((s, a) => s + a, 0);
 
   // ─── Cash blocks ─────────────────────────────────────
+  // Wave project ids = effective project ids (from allocations) excluding "__none__"
   const waveProjectIds = new Set<string>(
-    wavesWithMeta
-      .map((w) => w.projectId)
-      .filter((id): id is string => !!id)
+    Array.from(projectMap.keys()).filter((pid) => pid !== "__none__"),
   );
   const cashProjectIds = new Set(cashAllocations.map((c) => c.projectId));
   const blockProjectIds = Array.from(
@@ -1073,7 +1099,12 @@ function ResumeTab({
   );
 
   // ─── Merged project map (wave + cash) for section 3 ─────────
-  type MergedPerson = { wave: number; caisse: number };
+  type MergedPerson = {
+    wave: number;
+    caisse: number;
+    contributingWaves: ContributingWave[];
+    factureDate: string | null; // min des dates des waves contribuant
+  };
   const mergedProjectMap = new Map<string, {
     projectName: string;
     persons: Map<string, MergedPerson>;
@@ -1085,15 +1116,24 @@ function ResumeTab({
   // Seed from wave projectMap
   for (const [pid, g] of projectMap) {
     const persons = new Map<string, MergedPerson>();
-    for (const [name, amount] of g.persons) {
-      persons.set(name, { wave: amount, caisse: 0 });
+    for (const [name, entry] of g.persons) {
+      const factureDate = entry.contributingWaves.reduce<string | null>(
+        (min, w) => (min === null || w.date < min ? w.date : min),
+        null,
+      );
+      persons.set(name, {
+        wave: entry.amount,
+        caisse: 0,
+        contributingWaves: entry.contributingWaves,
+        factureDate,
+      });
     }
     mergedProjectMap.set(pid, {
       projectName: g.projectName,
       persons,
       waveTotal: g.totalAmount,
       cashTotal: 0,
-      waveCount: g.waveCount,
+      waveCount: g.waveIds.size,
     });
   }
 
@@ -1110,7 +1150,12 @@ function ResumeTab({
       });
     }
     const entry = mergedProjectMap.get(pid)!;
-    const existing = entry.persons.get(c.personName) || { wave: 0, caisse: 0 };
+    const existing = entry.persons.get(c.personName) || {
+      wave: 0,
+      caisse: 0,
+      contributingWaves: [],
+      factureDate: null,
+    };
     existing.caisse += Number(c.amount);
     entry.persons.set(c.personName, existing);
     entry.cashTotal += Number(c.amount);
@@ -1227,20 +1272,109 @@ function ResumeTab({
                   {Array.from(group.persons.entries())
                     .map(([name, amounts]) => ({
                       name,
+                      amounts,
                       total: amounts.wave + amounts.caisse,
                     }))
                     .sort((a, b) => b.total - a.total)
-                    .map(({ name, total }) => (
-                      <div key={name} className="flex items-center justify-between px-4 py-2.5">
-                        <div className="flex items-center gap-2">
-                          <div className="w-6 h-6 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center text-xs font-semibold">
-                            {name.charAt(0).toUpperCase()}
-                          </div>
-                          <span className="text-sm text-gray-700">{name}</span>
+                    .map(({ name, amounts, total }) => {
+                      const key = `${projId}|${name}`;
+                      const isExpanded = expandedFactureKeys.has(key);
+                      return (
+                        <div key={name}>
+                          <button
+                            onClick={() => toggleFactureExpand(key)}
+                            className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-gray-50 transition-colors text-left"
+                          >
+                            <div className="flex items-center gap-2 flex-1 min-w-0">
+                              <div className="w-6 h-6 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center text-xs font-semibold flex-shrink-0">
+                                {name.charAt(0).toUpperCase()}
+                              </div>
+                              <div className="flex flex-col min-w-0">
+                                <span className="text-sm text-gray-700 truncate">{name}</span>
+                                {amounts.factureDate && (
+                                  <span className="text-[11px] text-gray-400">
+                                    Date facture : {formatDateShort(amounts.factureDate)}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2 flex-shrink-0">
+                              <span className="text-sm text-gray-900">{formatCFA(total)}</span>
+                              <svg
+                                xmlns="http://www.w3.org/2000/svg"
+                                width="14"
+                                height="14"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                className={`text-gray-400 transition-transform ${isExpanded ? "rotate-180" : ""}`}
+                              >
+                                <polyline points="6 9 12 15 18 9" />
+                              </svg>
+                            </div>
+                          </button>
+                          {isExpanded && (
+                            <div className="px-4 pb-3 bg-gray-50/60 border-t border-gray-100">
+                              <div className="text-[11px] uppercase tracking-wide text-gray-400 font-semibold mt-2 mb-1">
+                                Règlements
+                              </div>
+                              <div className="space-y-1">
+                                {amounts.contributingWaves.length === 0 && amounts.caisse === 0 && (
+                                  <div className="text-xs text-gray-400 italic py-1">
+                                    Aucun règlement enregistré
+                                  </div>
+                                )}
+                                {amounts.contributingWaves
+                                  .slice()
+                                  .sort((a, b) => a.date.localeCompare(b.date))
+                                  .map((cw, idx) => (
+                                    <div
+                                      key={`${cw.waveId}-${idx}`}
+                                      className="flex items-center justify-between text-xs py-1"
+                                    >
+                                      <div className="flex items-center gap-2 min-w-0">
+                                        <span className="inline-flex items-center gap-1 text-blue-700 font-medium">
+                                          <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
+                                          </svg>
+                                          Wave
+                                        </span>
+                                        <span className="text-gray-500">
+                                          {formatDateShort(cw.date)}
+                                        </span>
+                                        {cw.counterparty && (
+                                          <span className="text-gray-600 truncate">
+                                            · {cw.counterparty}
+                                          </span>
+                                        )}
+                                      </div>
+                                      <span className="text-gray-900 font-medium flex-shrink-0 ml-2">
+                                        {formatCFA(cw.amount)}
+                                      </span>
+                                    </div>
+                                  ))}
+                                {amounts.caisse > 0 && (
+                                  <div className="flex items-center justify-between text-xs py-1">
+                                    <span className="inline-flex items-center gap-1 text-amber-700 font-medium">
+                                      <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                                        <rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2"/>
+                                      </svg>
+                                      Caisse
+                                    </span>
+                                    <span className="text-gray-900 font-medium">
+                                      {formatCFA(amounts.caisse)}
+                                    </span>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )}
                         </div>
-                        <span className="text-sm text-gray-900">{formatCFA(total)}</span>
-                      </div>
-                    ))}
+                      );
+                    })}
                 </div>
               </div>
             );
