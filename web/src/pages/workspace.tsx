@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
 import { api } from "../lib/api";
@@ -898,6 +898,159 @@ function SupplierGroup({
   );
 }
 
+// ─── Auto-link Wave → Facture d'équipe (étape 3) ────────────
+//
+// Algo : chaque wave flagué RFE est auto-lié à UNE personne cible.
+// Résolution :
+//   1) counterparty startsWith match vs personnes ayant des factures
+//   2) sinon, 1ère personne du chevron si elle a des factures
+//   3) sinon, 1ère personne arbitraire avec capacité restante
+// Le wave entier est ensuite distribué sur TOUTES les factures de
+// cette personne (chevron + cash), dans l'ordre alphabétique de la
+// clé projet. Waves traités par date croissante pour que la date
+// facture = date du 1er wave lié (priorité #4).
+// Fonction pure — sans side-effect sur React — pour pouvoir la
+// cacher dans un useState et contrôler les recalculs via un bouton.
+type LinkedWaveEntry = {
+  waveId: string;
+  date: string;
+  counterparty: string | null;
+  amount: number;
+};
+type AutoLinksResult = {
+  linkedByFactureKey: Map<string, LinkedWaveEntry[]>;
+  totalWaveUnlinked: number;
+};
+
+function computeAutoLinks(
+  wavesWithMeta: WaveTransaction[],
+  cashAllocations: CashAllocation[],
+  projectMap: Map<string, { persons: Map<string, { amount: number }> }>,
+): AutoLinksResult {
+  const linkedByFactureKey = new Map<string, LinkedWaveEntry[]>();
+  let totalWaveUnlinked = 0;
+
+  // Construction de l'index des factures par personne.
+  // Inclut les factures issues du chevron ET les factures cash-only.
+  // La capacité d'une facture = chevron amount + cash amount (total
+  // affiché en section 3). Un wave peut remplir jusqu'à cette capacité.
+  const factureTotal = new Map<string, { personName: string; amount: number }>();
+  for (const [pid, g] of projectMap) {
+    for (const [personName, entry] of g.persons) {
+      const factureKey = `${pid}|${personName}`;
+      factureTotal.set(factureKey, { personName, amount: entry.amount });
+    }
+  }
+  for (const c of cashAllocations) {
+    const factureKey = `${c.projectId}|${c.personName}`;
+    if (factureTotal.has(factureKey)) {
+      factureTotal.get(factureKey)!.amount += Number(c.amount);
+    } else {
+      factureTotal.set(factureKey, {
+        personName: c.personName,
+        amount: Number(c.amount),
+      });
+    }
+  }
+
+  const personFactureIndex = new Map<
+    string,
+    Array<{ factureKey: string; remaining: number }>
+  >();
+  for (const [factureKey, { personName, amount }] of factureTotal) {
+    if (!personFactureIndex.has(personName)) {
+      personFactureIndex.set(personName, []);
+    }
+    personFactureIndex.get(personName)!.push({ factureKey, remaining: amount });
+  }
+
+  const linkToFacture = (
+    factureKey: string,
+    wave: WaveTransaction,
+    desired: number,
+  ): number => {
+    for (const arr of personFactureIndex.values()) {
+      for (const f of arr) {
+        if (f.factureKey === factureKey) {
+          const linkAmount = Math.min(desired, f.remaining);
+          if (linkAmount <= 0) return 0;
+          f.remaining -= linkAmount;
+          if (!linkedByFactureKey.has(factureKey)) {
+            linkedByFactureKey.set(factureKey, []);
+          }
+          linkedByFactureKey.get(factureKey)!.push({
+            waveId: wave.id,
+            date: wave.transactionDate,
+            counterparty: wave.counterpartyName,
+            amount: linkAmount,
+          });
+          return linkAmount;
+        }
+      }
+    }
+    return 0;
+  };
+
+  const sortedWaves = wavesWithMeta
+    .filter((w) => w.allocations && w.allocations.length > 0)
+    .slice()
+    .sort((a, b) => a.transactionDate.localeCompare(b.transactionDate));
+
+  for (const wave of sortedWaves) {
+    // Résolution personne cible
+    let targetPerson: string | null = null;
+
+    if (wave.counterpartyName) {
+      const firstToken = wave.counterpartyName.trim().split(/\s+/)[0] || "";
+      if (firstToken.length >= 2) {
+        for (const personName of personFactureIndex.keys()) {
+          if (personName.toLowerCase().startsWith(firstToken.toLowerCase())) {
+            targetPerson = personName;
+            break;
+          }
+        }
+      }
+    }
+
+    if (!targetPerson && wave.allocations && wave.allocations[0]) {
+      const firstChev = wave.allocations[0].name;
+      if (personFactureIndex.has(firstChev)) {
+        targetPerson = firstChev;
+      }
+    }
+
+    if (!targetPerson) {
+      for (const [personName, factures] of personFactureIndex) {
+        if (factures.some((f) => f.remaining > 0)) {
+          targetPerson = personName;
+          break;
+        }
+      }
+    }
+
+    if (!targetPerson) {
+      totalWaveUnlinked += Number(wave.amount);
+      continue;
+    }
+
+    const factures = personFactureIndex.get(targetPerson)!;
+    const ordered = factures
+      .slice()
+      .sort((a, b) => a.factureKey.localeCompare(b.factureKey));
+
+    let waveRemaining = Number(wave.amount);
+    for (const f of ordered) {
+      if (waveRemaining <= 0) break;
+      const linked = linkToFacture(f.factureKey, wave, waveRemaining);
+      waveRemaining -= linked;
+    }
+
+    if (waveRemaining > 0) totalWaveUnlinked += waveRemaining;
+  }
+
+  return { linkedByFactureKey, totalWaveUnlinked };
+}
+
 // ─── Resume Tab ───────────────────────────────────────────────────
 
 function ResumeTab({
@@ -1082,125 +1235,31 @@ function ResumeTab({
     ]),
   );
 
-  // ─── Étape 3 — Auto-link wave → facture d'équipe ─────────────
-  // Chaque wave flagué RFE (avec allocations) est auto-lié à UNE personne :
-  //   1) counterparty startsWith match vs noms factures
-  //   2) sinon 1ère personne du chevron si elle a des factures
-  //   3) sinon arbitraire (1ère personne avec capacité restante)
-  // Le montant total du wave est distribué sur les factures de cette
-  // personne (ordre alphabétique clé projet). Waves processés par date
-  // croissante → priorité #4 : factureDate = 1er wave auto-lié.
-  type LinkedWaveEntry = {
-    waveId: string;
-    date: string;
-    counterparty: string | null;
-    amount: number;
-  };
-  const linkedByFactureKey = new Map<string, LinkedWaveEntry[]>();
-  let totalWaveUnlinked = 0;
+  // ─── Étape 3 — Liaisons wave → facture d'équipe ──────────────
+  // Stocké dans un state local et recalculé SEULEMENT :
+  //   - au premier chargement des données (via useEffect)
+  //   - quand l'utilisateur clique "Recalculer les liaisons"
+  // → les liaisons sont stables entre les changements de données,
+  //   l'utilisateur reprend le contrôle via le bouton.
+  const [autoLinks, setAutoLinks] = useState<AutoLinksResult>({
+    linkedByFactureKey: new Map(),
+    totalWaveUnlinked: 0,
+  });
+  const linksInitRef = useRef(false);
 
-  const personFactureIndex = new Map<
-    string,
-    Array<{ factureKey: string; remaining: number }>
-  >();
-  for (const [pid, g] of projectMap) {
-    for (const [personName, entry] of g.persons) {
-      if (!personFactureIndex.has(personName)) {
-        personFactureIndex.set(personName, []);
-      }
-      personFactureIndex
-        .get(personName)!
-        .push({ factureKey: `${pid}|${personName}`, remaining: entry.amount });
-    }
-  }
+  useEffect(() => {
+    if (linksInitRef.current) return;
+    if (waves.length === 0 && cashAllocations.length === 0) return;
+    linksInitRef.current = true;
+    setAutoLinks(computeAutoLinks(wavesWithMeta, cashAllocations, projectMap));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [waves.length, cashAllocations.length]);
 
-  const sortedWavesForLink = wavesWithMeta
-    .filter((w) => w.allocations && w.allocations.length > 0)
-    .slice()
-    .sort((a, b) => a.transactionDate.localeCompare(b.transactionDate));
-
-  // Helper : lier un montant à une facture (mute personFactureIndex)
-  const linkToFacture = (
-    factureKey: string,
-    wave: WaveTransaction,
-    desired: number,
-  ): number => {
-    // Cherche la facture dans l'index pour recupérer `remaining`
-    for (const arr of personFactureIndex.values()) {
-      for (const f of arr) {
-        if (f.factureKey === factureKey) {
-          const linkAmount = Math.min(desired, f.remaining);
-          if (linkAmount <= 0) return 0;
-          f.remaining -= linkAmount;
-          if (!linkedByFactureKey.has(factureKey)) {
-            linkedByFactureKey.set(factureKey, []);
-          }
-          linkedByFactureKey.get(factureKey)!.push({
-            waveId: wave.id,
-            date: wave.transactionDate,
-            counterparty: wave.counterpartyName,
-            amount: linkAmount,
-          });
-          return linkAmount;
-        }
-      }
-    }
-    return 0;
+  const handleRefreshLinks = () => {
+    setAutoLinks(computeAutoLinks(wavesWithMeta, cashAllocations, projectMap));
   };
 
-  for (const wave of sortedWavesForLink) {
-    // Priorité 1 : counterparty startsWith match → verse tout le wave
-    // sur les factures de la personne matchée (distribuées par clé alpha).
-    let targetPerson: string | null = null;
-    if (wave.counterpartyName) {
-      const firstToken = wave.counterpartyName.trim().split(/\s+/)[0] || "";
-      if (firstToken.length >= 2) {
-        for (const personName of personFactureIndex.keys()) {
-          if (personName.toLowerCase().startsWith(firstToken.toLowerCase())) {
-            targetPerson = personName;
-            break;
-          }
-        }
-      }
-    }
-
-    if (targetPerson) {
-      const factures = personFactureIndex.get(targetPerson)!;
-      const ordered = factures
-        .slice()
-        .sort((a, b) => a.factureKey.localeCompare(b.factureKey));
-      let waveRemaining = Number(wave.amount);
-      for (const f of ordered) {
-        if (waveRemaining <= 0) break;
-        const linked = linkToFacture(f.factureKey, wave, waveRemaining);
-        waveRemaining -= linked;
-      }
-      if (waveRemaining > 0) totalWaveUnlinked += waveRemaining;
-      continue;
-    }
-
-    // Fallback : pas de counterparty match → suivre le chevron fidèlement.
-    // Chaque ligne d'allocation { name, amount } du chevron devient un
-    // lien direct vers la facture (wave.projectId, alloc.name).
-    if (!wave.projectId || !wave.allocations || wave.allocations.length === 0) {
-      totalWaveUnlinked += Number(wave.amount);
-      continue;
-    }
-    let waveRemaining = Number(wave.amount);
-    for (const alloc of wave.allocations) {
-      if (waveRemaining <= 0) break;
-      const factureKey = `${wave.projectId}|${alloc.name}`;
-      const desired = Math.min(alloc.amount, waveRemaining);
-      const linked = linkToFacture(factureKey, wave, desired);
-      waveRemaining -= linked;
-      // Si linked < desired c'est que la facture est déjà saturée
-      // par d'autres waves → la différence est perdue (priorité #1).
-      if (linked < desired) {
-        totalWaveUnlinked += desired - linked;
-      }
-    }
-    if (waveRemaining > 0) totalWaveUnlinked += waveRemaining;
-  }
+  const { linkedByFactureKey, totalWaveUnlinked } = autoLinks;
 
   // ─── Merged project map (wave + cash) for section 3 ─────────
   type MergedPerson = {
@@ -1445,9 +1504,21 @@ function ResumeTab({
             </div>
           );
         })()}
-        <h3 className="font-heading font-semibold text-gray-900 mb-3">
-          Facture par projet et par personne
-        </h3>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-heading font-semibold text-gray-900">
+            Facture par projet et par personne
+          </h3>
+          <button
+            onClick={handleRefreshLinks}
+            className="flex items-center gap-1.5 text-xs text-pine hover:text-pine-hover bg-pine-light hover:bg-pine-light/80 px-3 py-1.5 rounded-lg font-medium transition-colors"
+            title="Recalcule les liaisons entre règlements wave et factures à partir des données actuelles"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+            </svg>
+            Recalculer les liaisons
+          </button>
+        </div>
         <div className="space-y-3">
           {Array.from(mergedProjectMap.entries()).map(([projId, group]) => {
             const projectTotal = group.waveTotal + group.cashTotal;
