@@ -1205,66 +1205,46 @@ function ResumeTab({
         </div>
       </div>
 
-      {/* Section 3 — Détail par projet (fusion wave + caisse) */}
+      {/* Section 3 — Facture par projet et par personne (total wave + caisse) */}
       <div className="p-4 pt-0">
         <h3 className="font-heading font-semibold text-gray-900 mb-3">
-          Détail par projet
+          Facture par projet et par personne
         </h3>
         <div className="space-y-3">
-          {Array.from(mergedProjectMap.entries()).map(([projId, group]) => (
-            <div key={projId} className="bg-white rounded-xl border border-gray-200">
-              <div className="px-4 py-3 border-b bg-gray-50 rounded-t-xl">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <span className="text-sm font-medium text-gray-900">
-                      {group.projectName}
-                    </span>
-                    {group.waveCount > 0 && (
-                      <span className="text-xs text-gray-500 ml-2">
-                        ({group.waveCount} transaction{group.waveCount > 1 ? "s" : ""} Wave)
-                      </span>
-                    )}
-                  </div>
-                </div>
-                <div className="flex gap-4 mt-1 text-xs">
-                  <span className="text-blue-700">
-                    Wave : <span className="font-semibold">{formatCFA(group.waveTotal)}</span>
+          {Array.from(mergedProjectMap.entries()).map(([projId, group]) => {
+            const projectTotal = group.waveTotal + group.cashTotal;
+            return (
+              <div key={projId} className="bg-white rounded-xl border border-gray-200">
+                <div className="px-4 py-3 border-b bg-gray-50 rounded-t-xl flex items-center justify-between">
+                  <span className="text-sm font-medium text-gray-900">
+                    {group.projectName}
                   </span>
-                  <span className="text-amber-700">
-                    Caisse : <span className="font-semibold">{formatCFA(group.cashTotal)}</span>
+                  <span className="text-sm font-semibold text-gray-900">
+                    {formatCFA(projectTotal)}
                   </span>
                 </div>
-              </div>
-              <div className="divide-y">
-                {Array.from(group.persons.entries())
-                  .sort((a, b) => (b[1].wave + b[1].caisse) - (a[1].wave + a[1].caisse))
-                  .map(([name, amounts]) => (
-                    <div key={name} className="flex items-center justify-between px-4 py-2.5">
-                      <div className="flex items-center gap-2">
-                        <div className="w-6 h-6 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center text-xs font-semibold">
-                          {name.charAt(0).toUpperCase()}
-                        </div>
-                        <span className="text-sm text-gray-700">{name}</span>
-                      </div>
-                      <div className="flex gap-3 text-xs">
-                        <div className="text-right">
-                          <div className="text-gray-400">Wave</div>
-                          <div className="text-sm text-blue-700 font-medium">
-                            {amounts.wave > 0 ? formatCFA(amounts.wave) : "—"}
+                <div className="divide-y">
+                  {Array.from(group.persons.entries())
+                    .map(([name, amounts]) => ({
+                      name,
+                      total: amounts.wave + amounts.caisse,
+                    }))
+                    .sort((a, b) => b.total - a.total)
+                    .map(({ name, total }) => (
+                      <div key={name} className="flex items-center justify-between px-4 py-2.5">
+                        <div className="flex items-center gap-2">
+                          <div className="w-6 h-6 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center text-xs font-semibold">
+                            {name.charAt(0).toUpperCase()}
                           </div>
+                          <span className="text-sm text-gray-700">{name}</span>
                         </div>
-                        <div className="text-right">
-                          <div className="text-gray-400">Caisse</div>
-                          <div className="text-sm text-amber-700 font-medium">
-                            {amounts.caisse > 0 ? formatCFA(amounts.caisse) : "—"}
-                          </div>
-                        </div>
+                        <span className="text-sm text-gray-900">{formatCFA(total)}</span>
                       </div>
-                    </div>
-                  ))}
+                    ))}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
     </div>
