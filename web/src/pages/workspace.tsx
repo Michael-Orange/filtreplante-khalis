@@ -1252,6 +1252,84 @@ function ResumeTab({
 
       {/* Section 3 — Facture par projet et par personne (total wave + caisse) */}
       <div className="p-4 pt-0">
+        {(() => {
+          const totalWaveRFE = waveGrandTotal;
+          const totalCashRFE = cashAllocations.reduce(
+            (s, c) => s + Number(c.amount),
+            0,
+          );
+          const totalFactures = Array.from(mergedProjectMap.values()).reduce(
+            (s, g) => s + g.waveTotal + g.cashTotal,
+            0,
+          );
+          const sumRFE = totalWaveRFE + totalCashRFE;
+          const discrepancy = totalFactures - sumRFE;
+          const hasDiscrepancy = Math.abs(discrepancy) > 0.01;
+          return (
+            <div className="mb-3 bg-white rounded-xl border border-gray-200 overflow-hidden">
+              <div className="px-4 py-2.5 bg-gray-50 border-b text-xs font-semibold uppercase tracking-wide text-gray-500">
+                Récapitulatif règlements
+              </div>
+              <div className="divide-y">
+                <div className="flex items-center justify-between px-4 py-2.5">
+                  <div className="flex items-center gap-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-blue-600">
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
+                    </svg>
+                    <span className="text-sm text-gray-700">
+                      Total des Règlements Wave pour Factures d'équipe
+                    </span>
+                  </div>
+                  <span className="text-sm font-semibold text-blue-700">
+                    {formatCFA(totalWaveRFE)}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between px-4 py-2.5">
+                  <div className="flex items-center gap-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="text-amber-600">
+                      <rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2"/>
+                    </svg>
+                    <span className="text-sm text-gray-700">
+                      Total des Règlements Caisse pour Factures d'équipe
+                    </span>
+                  </div>
+                  <span className="text-sm font-semibold text-amber-700">
+                    {formatCFA(totalCashRFE)}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between px-4 py-2.5 bg-gray-50/80">
+                  <span className="text-sm font-semibold text-gray-700">
+                    Total règlements
+                  </span>
+                  <span className="text-sm font-bold text-gray-900">
+                    {formatCFA(sumRFE)}
+                  </span>
+                </div>
+                <div
+                  className={`flex items-center justify-between px-4 py-2.5 ${
+                    hasDiscrepancy ? "bg-red-50" : ""
+                  }`}
+                >
+                  <span className="text-xs text-gray-500">
+                    Total factures ci-dessous
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-semibold text-gray-900">
+                      {formatCFA(totalFactures)}
+                    </span>
+                    {hasDiscrepancy ? (
+                      <span className="text-xs text-red-600 font-medium">
+                        ⚠ écart {formatCFA(Math.abs(discrepancy))}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-green-600">✓</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
         <h3 className="font-heading font-semibold text-gray-900 mb-3">
           Facture par projet et par personne
         </h3>
