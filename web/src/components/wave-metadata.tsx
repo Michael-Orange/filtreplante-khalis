@@ -111,37 +111,55 @@ export function WaveMetadata({
     });
   };
 
+  // Règle : un wave ne peut avoir qu'UNE seule personne dans ses allocations
+  // (mais cette personne peut avoir plusieurs lignes pour des projets différents).
+  const currentPersonName = allocations[0]?.name || null;
+
   const addPerson = (name: string) => {
-    if (allocations.some((a) => a.name === name)) return;
-    setAllocations([...allocations, { name, amount: 0 }]);
+    if (currentPersonName && currentPersonName !== name) {
+      alert(
+        `Un règlement de facture d'équipe ne peut aller qu'à une seule personne. Cette allocation est déjà assignée à ${currentPersonName}. Supprime d'abord ${currentPersonName} pour changer.`,
+      );
+      return;
+    }
+    // First allocation for this person: start with the full wave amount.
+    // Subsequent lines for the same person (multi-project split) start at 0.
+    const isFirst = allocations.length === 0;
+    setAllocations([
+      ...allocations,
+      { name, amount: isFirst ? waveAmount : 0 },
+    ]);
   };
 
-  const removePerson = (name: string) => {
-    setAllocations(allocations.filter((a) => a.name !== name));
+  const addSplitLine = () => {
+    if (!currentPersonName) return;
+    setAllocations([...allocations, { name: currentPersonName, amount: 0 }]);
   };
 
-  const updateAmount = (name: string, amount: number) => {
+  const removeAtIndex = (idx: number) => {
+    setAllocations(allocations.filter((_, i) => i !== idx));
+  };
+
+  const updateAmountAtIndex = (idx: number, amount: number) => {
     setAllocations(
-      allocations.map((a) => (a.name === name ? { ...a, amount } : a))
+      allocations.map((a, i) => (i === idx ? { ...a, amount } : a)),
     );
   };
 
-  const updateAllocProject = (name: string, newProjectId: string) => {
-    // Empty value ("") = use the wave's main project (projectId omitted on save)
+  const updateAllocProjectAtIndex = (idx: number, newProjectId: string) => {
     setAllocations(
-      allocations.map((a) =>
-        a.name === name
+      allocations.map((a, i) =>
+        i === idx
           ? { ...a, projectId: newProjectId ? newProjectId : null }
           : a,
       ),
     );
   };
 
-  const renamePerson = (oldName: string, newName: string) => {
-    if (!newName.trim() || (newName !== oldName && allocations.some((a) => a.name === newName))) return;
-    setAllocations(
-      allocations.map((a) => (a.name === oldName ? { ...a, name: newName.trim() } : a))
-    );
+  const renameAllLines = (newName: string) => {
+    const trimmed = newName.trim();
+    if (!trimmed) return;
+    setAllocations(allocations.map((a) => ({ ...a, name: trimmed })));
     setEditingName(null);
   };
 
@@ -214,29 +232,30 @@ export function WaveMetadata({
 
           {allocations.length > 0 && (
             <div className="bg-white rounded-lg border border-gray-200 divide-y divide-gray-100 mb-2">
-              {allocations.map((alloc) => {
+              {allocations.map((alloc, idx) => {
                 const hasSplitProject = !!alloc.projectId && alloc.projectId !== projectId;
+                const isFirstLine = idx === 0;
                 return (
-                <div key={alloc.name} className="px-3 py-2 space-y-1.5">
+                <div key={idx} className="px-3 py-2 space-y-1.5">
                   <div className="flex items-center gap-2">
                     <div className="w-7 h-7 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center text-xs font-semibold flex-shrink-0">
                       {alloc.name.charAt(0).toUpperCase()}
                     </div>
-                    {/* Editable name */}
-                    {editingName === alloc.name ? (
+                    {/* Editable name (first line only, renames all lines) */}
+                    {isFirstLine && editingName === alloc.name ? (
                       <input
                         type="text"
                         value={editNameValue}
                         onChange={(e) => setEditNameValue(e.target.value)}
-                        onBlur={() => renamePerson(alloc.name, editNameValue)}
+                        onBlur={() => renameAllLines(editNameValue)}
                         onKeyDown={(e) => {
-                          if (e.key === "Enter") renamePerson(alloc.name, editNameValue);
+                          if (e.key === "Enter") renameAllLines(editNameValue);
                           if (e.key === "Escape") setEditingName(null);
                         }}
                         className="text-sm text-gray-700 w-24 bg-blue-50 border border-blue-300 rounded px-1.5 py-0.5 focus:outline-none"
                         autoFocus
                       />
-                    ) : (
+                    ) : isFirstLine ? (
                       <span
                         onClick={() => {
                           setEditingName(alloc.name);
@@ -247,33 +266,37 @@ export function WaveMetadata({
                       >
                         {alloc.name}
                       </span>
+                    ) : (
+                      <span className="text-[11px] text-gray-400 flex-shrink-0 w-24 truncate italic">
+                        ↳ même personne
+                      </span>
                     )}
                     <div className="flex-1">
                       <input
                         type="number"
                         value={alloc.amount || ""}
                         onChange={(e) =>
-                          updateAmount(alloc.name, parseInt(e.target.value) || 0)
+                          updateAmountAtIndex(idx, parseInt(e.target.value) || 0)
                         }
                         placeholder="0"
                         className="w-full bg-gray-50 border border-gray-200 rounded-lg px-3 py-1.5 text-sm text-right focus:border-blue-400 focus:ring-1 focus:ring-blue-400/20 focus:outline-none"
                       />
                     </div>
                     <button
-                      onClick={() => removePerson(alloc.name)}
+                      onClick={() => removeAtIndex(idx)}
                       className="text-gray-300 hover:text-red-500 transition-colors flex-shrink-0"
                     >
                       <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                     </button>
                   </div>
-                  {/* Per-allocation project selector (multi-project split) */}
+                  {/* Per-allocation project selector (multi-project split for same person) */}
                   <div className="flex items-center gap-2 pl-9">
                     <label className={`text-[11px] ${hasSplitProject ? "text-amber-600 font-medium" : "text-gray-400"}`}>
                       Projet :
                     </label>
                     <select
                       value={alloc.projectId || ""}
-                      onChange={(e) => updateAllocProject(alloc.name, e.target.value)}
+                      onChange={(e) => updateAllocProjectAtIndex(idx, e.target.value)}
                       className={`text-[11px] bg-transparent border-0 border-b border-dashed px-0 py-0 focus:outline-none focus:border-blue-400 ${
                         hasSplitProject ? "text-amber-700 border-amber-300" : "text-gray-500 border-gray-200"
                       }`}
@@ -315,41 +338,51 @@ export function WaveMetadata({
             </div>
           )}
 
-          {/* Add person controls */}
-          <div className="flex items-center gap-2">
-            {availablePersons && availablePersons.length > 0 && (
-              <select
-                onChange={(e) => {
-                  if (e.target.value) addPerson(e.target.value);
-                  e.target.value = "";
-                }}
-                className="flex-1 bg-white border border-dashed border-gray-300 rounded-lg px-3 py-1.5 text-sm text-gray-500 focus:border-blue-400 focus:outline-none"
-                defaultValue=""
-              >
-                <option value="" disabled>
-                  + Ajouter une personne
-                </option>
-                {availablePersons.map((p) => (
-                  <option key={p.name} value={p.name}>
-                    {p.name}
+          {/* Add person controls — before first allocation: choose person ;
+              after: add a split line for the same person (multi-project) */}
+          {currentPersonName === null ? (
+            <div className="flex items-center gap-2">
+              {availablePersons && availablePersons.length > 0 && (
+                <select
+                  onChange={(e) => {
+                    if (e.target.value) addPerson(e.target.value);
+                    e.target.value = "";
+                  }}
+                  className="flex-1 bg-white border border-dashed border-gray-300 rounded-lg px-3 py-1.5 text-sm text-gray-500 focus:border-blue-400 focus:outline-none"
+                  defaultValue=""
+                >
+                  <option value="" disabled>
+                    + Ajouter une personne
                   </option>
-                ))}
-              </select>
-            )}
+                  {availablePersons.map((p) => (
+                    <option key={p.name} value={p.name}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+              )}
+              <button
+                onClick={() => {
+                  setShowManual(!showManual);
+                  setManualInput("");
+                  setShowSuggestions(false);
+                }}
+                className="text-xs text-blue-500 hover:text-blue-700 whitespace-nowrap font-medium"
+              >
+                + Autre
+              </button>
+            </div>
+          ) : (
             <button
-              onClick={() => {
-                setShowManual(!showManual);
-                setManualInput("");
-                setShowSuggestions(false);
-              }}
-              className="text-xs text-blue-500 hover:text-blue-700 whitespace-nowrap font-medium"
+              onClick={addSplitLine}
+              className="w-full bg-white border border-dashed border-gray-300 rounded-lg px-3 py-1.5 text-sm text-gray-500 hover:text-blue-600 hover:border-blue-400 transition-colors"
             >
-              + Autre
+              + Ajouter une autre ligne pour {currentPersonName} (autre projet)
             </button>
-          </div>
+          )}
 
-          {/* Manual person input with autocomplete */}
-          {showManual && (
+          {/* Manual person input with autocomplete — only visible before first allocation */}
+          {currentPersonName === null && showManual && (
             <div className="relative mt-2">
               <div className="flex items-center gap-2">
                 <input
