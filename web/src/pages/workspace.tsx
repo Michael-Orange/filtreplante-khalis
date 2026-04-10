@@ -1062,22 +1062,28 @@ function ResumeTab({
 }) {
   const queryClient = useQueryClient();
 
-  const { data: projects } = useQuery({
+  const projectsQuery = useQuery({
     queryKey: ["projects"],
     queryFn: () => api.get<Project[]>("/api/metadata/projects"),
     staleTime: 5 * 60_000,
   });
+  const projects = projectsQuery.data;
 
-  const { data: cashAllocations = [] } = useQuery({
+  const cashQuery = useQuery({
     queryKey: ["cash", sessionId],
     queryFn: () => api.get<CashAllocation[]>(`/api/cash/${sessionId}`),
   });
+  const cashAllocations = cashQuery.data ?? [];
 
-  const { data: persons = [] } = useQuery({
+  const personsQuery = useQuery({
     queryKey: ["persons"],
     queryFn: () => api.get<{ name: string }[]>("/api/metadata/persons"),
     staleTime: 5 * 60_000,
   });
+  const persons = personsQuery.data ?? [];
+
+  const allDataLoaded =
+    projectsQuery.isSuccess && cashQuery.isSuccess && personsQuery.isSuccess;
 
   const [pendingManualProjectIds, setPendingManualProjectIds] = useState<string[]>([]);
   const [expandedFactureKeys, setExpandedFactureKeys] = useState<Set<string>>(new Set());
@@ -1236,11 +1242,11 @@ function ResumeTab({
   );
 
   // ─── Étape 3 — Liaisons wave → facture d'équipe ──────────────
-  // Stocké dans un state local et recalculé SEULEMENT :
-  //   - au premier chargement des données (via useEffect)
+  // Stocké dans un state local, recalculé SEULEMENT :
+  //   - au premier rendu où TOUTES les queries (cash, projects,
+  //     persons) sont isSuccess → init via useEffect
   //   - quand l'utilisateur clique "Recalculer les liaisons"
-  // → les liaisons sont stables entre les changements de données,
-  //   l'utilisateur reprend le contrôle via le bouton.
+  // → les liaisons sont stables entre les changements de données.
   const [autoLinks, setAutoLinks] = useState<AutoLinksResult>({
     linkedByFactureKey: new Map(),
     totalWaveUnlinked: 0,
@@ -1249,11 +1255,11 @@ function ResumeTab({
 
   useEffect(() => {
     if (linksInitRef.current) return;
-    if (waves.length === 0 && cashAllocations.length === 0) return;
+    if (!allDataLoaded) return;
     linksInitRef.current = true;
     setAutoLinks(computeAutoLinks(wavesWithMeta, cashAllocations, projectMap));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [waves.length, cashAllocations.length]);
+  }, [allDataLoaded]);
 
   const handleRefreshLinks = () => {
     setAutoLinks(computeAutoLinks(wavesWithMeta, cashAllocations, projectMap));
@@ -1543,6 +1549,15 @@ function ResumeTab({
                     .map(({ name, amounts, total }) => {
                       const key = `${projId}|${name}`;
                       const isExpanded = expandedFactureKeys.has(key);
+                      // Caisse affichée = facture total - total des waves liés.
+                      // Représente "ce qu'il reste à régler en caisse" pour
+                      // équilibrer la facture, peu importe ce qui est
+                      // stocké dans cash_allocations.
+                      const linkedWaveSum = amounts.linkedWaves.reduce(
+                        (s, lw) => s + lw.amount,
+                        0,
+                      );
+                      const displayCash = Math.max(0, total - linkedWaveSum);
                       return (
                         <div key={name}>
                           <button
@@ -1586,7 +1601,7 @@ function ResumeTab({
                                 Règlements
                               </div>
                               <div className="space-y-1">
-                                {amounts.linkedWaves.length === 0 && amounts.caisse === 0 && (
+                                {amounts.linkedWaves.length === 0 && displayCash === 0 && (
                                   <div className="text-xs text-gray-400 italic py-1">
                                     Aucun règlement lié
                                   </div>
@@ -1620,7 +1635,7 @@ function ResumeTab({
                                       </span>
                                     </div>
                                   ))}
-                                {amounts.caisse > 0 && (
+                                {displayCash > 0 && (
                                   <div className="flex items-center justify-between text-xs py-1">
                                     <span className="inline-flex items-center gap-1 text-amber-700 font-medium">
                                       <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -1629,7 +1644,7 @@ function ResumeTab({
                                       Caisse
                                     </span>
                                     <span className="text-gray-900 font-medium">
-                                      {formatCFA(amounts.caisse)}
+                                      {formatCFA(displayCash)}
                                     </span>
                                   </div>
                                 )}
