@@ -1062,6 +1062,16 @@ function ResumeTab({
     setPendingManualProjectIds((prev) => prev.filter((id) => id !== projectId));
   };
 
+  // Autocomplete pool for "+ Autre" : persons connues + noms déjà utilisés
+  // dans wave ou caisse de la session (dédupliqués).
+  const suggestionPool = Array.from(
+    new Set<string>([
+      ...persons.map((p) => p.name),
+      ...wavesWithMeta.flatMap((w) => (w.allocations || []).map((a) => a.name)),
+      ...cashAllocations.map((c) => c.personName),
+    ]),
+  );
+
   // ─── Merged project map (wave + cash) for section 3 ─────────
   type MergedPerson = { wave: number; caisse: number };
   const mergedProjectMap = new Map<string, {
@@ -1165,6 +1175,7 @@ function ResumeTab({
               total={block.total}
               isManual={block.isManual}
               persons={persons}
+              suggestionPool={suggestionPool}
               onAddPerson={(name) =>
                 createCashMutation.mutate({
                   projectId: block.projectId,
@@ -1269,6 +1280,7 @@ function CashProjectBlock({
   total,
   isManual,
   persons,
+  suggestionPool,
   onAddPerson,
   onUpdateAmount,
   onDeleteLine,
@@ -1280,6 +1292,7 @@ function CashProjectBlock({
   total: number;
   isManual: boolean;
   persons: { name: string }[];
+  suggestionPool: string[];
   onAddPerson: (name: string) => void;
   onUpdateAmount: (id: string, amount: number) => void;
   onDeleteLine: (id: string) => void;
@@ -1291,10 +1304,28 @@ function CashProjectBlock({
   const usedNames = new Set(lines.map((l) => l.personName));
   const availablePersons = persons.filter((p) => !usedNames.has(p.name));
 
+  const trimmedInput = manualInput.trim();
+  const suggestions =
+    trimmedInput.length >= 1
+      ? suggestionPool
+          .filter(
+            (n) =>
+              n.toLowerCase().startsWith(trimmedInput.toLowerCase()) &&
+              !usedNames.has(n) &&
+              n.toLowerCase() !== trimmedInput.toLowerCase(),
+          )
+          .slice(0, 5)
+      : [];
+
   const handleAddCustom = () => {
-    const trimmed = manualInput.trim();
-    if (!trimmed) return;
-    onAddPerson(trimmed);
+    if (!trimmedInput) return;
+    onAddPerson(trimmedInput);
+    setManualInput("");
+    setShowManual(false);
+  };
+
+  const handlePickSuggestion = (name: string) => {
+    onAddPerson(name);
     setManualInput("");
     setShowManual(false);
   };
@@ -1378,25 +1409,43 @@ function CashProjectBlock({
           </button>
         </div>
         {showManual && (
-          <div className="flex items-center gap-2">
-            <input
-              type="text"
-              value={manualInput}
-              onChange={(e) => setManualInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") handleAddCustom();
-              }}
-              placeholder="Nom de la personne"
-              className="flex-1 bg-white border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:border-blue-400 focus:outline-none"
-              autoFocus
-            />
-            <button
-              onClick={handleAddCustom}
-              disabled={!manualInput.trim()}
-              className="text-xs bg-blue-500 text-white px-3 py-1.5 rounded-lg hover:bg-blue-600 disabled:opacity-50"
-            >
-              OK
-            </button>
+          <div className="relative">
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={manualInput}
+                onChange={(e) => setManualInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleAddCustom();
+                }}
+                placeholder="Nom de la personne"
+                className="flex-1 bg-white border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:border-blue-400 focus:outline-none"
+                autoFocus
+              />
+              <button
+                onClick={handleAddCustom}
+                disabled={!trimmedInput}
+                className="text-xs bg-blue-500 text-white px-3 py-1.5 rounded-lg hover:bg-blue-600 disabled:opacity-50"
+              >
+                OK
+              </button>
+            </div>
+            {suggestions.length > 0 && (
+              <div className="absolute z-10 left-0 right-12 mt-1 bg-white border border-gray-200 rounded-lg shadow-lg overflow-hidden">
+                {suggestions.map((name) => (
+                  <button
+                    key={name}
+                    onClick={() => handlePickSuggestion(name)}
+                    className="w-full text-left px-3 py-2 text-sm hover:bg-blue-50 transition-colors flex items-center gap-2"
+                  >
+                    <div className="w-5 h-5 rounded-full bg-gray-100 text-gray-600 flex items-center justify-center text-xs">
+                      {name.charAt(0).toUpperCase()}
+                    </div>
+                    {name}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>
