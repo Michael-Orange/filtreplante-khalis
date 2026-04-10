@@ -40,9 +40,7 @@ export const waveTransactions = khalisSchema.table(
     counterpartyMobile: varchar("counterparty_mobile", { length: 20 }),
     rawLine: text("raw_line").notNull(),
     projectId: varchar("project_id"),
-    allocations: jsonb("allocations")
-      .$type<{ name: string; amount: number; projectId?: string | null }[]>()
-      .default([]),
+    allocations: jsonb("allocations").$type<{ name: string; amount: number }[]>().default([]),
     createdAt: timestamp("created_at").notNull().defaultNow(),
   },
   (table) => ({

@@ -24,7 +24,7 @@ interface WaveTransaction {
   counterpartyName: string | null;
   counterpartyMobile: string | null;
   projectId: string | null;
-  allocations: { name: string; amount: number; projectId?: string | null }[] | null;
+  allocations: { name: string; amount: number }[] | null;
 }
 
 interface CashAllocation {
@@ -425,7 +425,6 @@ export function WorkspacePage() {
                           <WaveMetadata
                             waveId={wave.id}
                             waveAmount={waveAmt}
-                            counterpartyName={wave.counterpartyName}
                             currentProjectId={wave.projectId}
                             currentAllocations={wave.allocations || []}
                             allWaveAllocations={allWaveAllocations}
@@ -986,9 +985,10 @@ function ResumeTab({
     amount: number;
   };
 
-  // Group by effective project (alloc.projectId || wave.projectId) × person
-  // Each allocation entry may target a different project than wave.projectId
-  // → 1 wave can contribute to multiple factures (multi-project split).
+  // Group by wave.projectId × person
+  // 1 wave = 1 projet + plusieurs personnes dans ses allocations.
+  // Le montant de la facture (projet × personne) = somme des allocations
+  // pour cette personne sur les waves ayant ce projet.
   const projectMap = new Map<string, {
     projectName: string;
     persons: Map<string, { amount: number; contributingWaves: ContributingWave[] }>;
@@ -998,25 +998,25 @@ function ResumeTab({
 
   for (const w of wavesWithMeta) {
     if (!w.allocations || w.allocations.length === 0) continue;
+    const projId = w.projectId || "__none__";
+    const projName =
+      w.projectId && projects
+        ? projects.find((p) => p.id === w.projectId)?.name || "Projet inconnu"
+        : "Sans projet";
+
+    if (!projectMap.has(projId)) {
+      projectMap.set(projId, {
+        projectName: projName,
+        persons: new Map(),
+        totalAmount: 0,
+        waveIds: new Set(),
+      });
+    }
+    const group = projectMap.get(projId)!;
+    group.waveIds.add(w.id);
+
     for (const alloc of w.allocations) {
-      const effectivePid = alloc.projectId || w.projectId || "__none__";
-      const projName =
-        effectivePid !== "__none__" && projects
-          ? projects.find((p) => p.id === effectivePid)?.name || "Projet inconnu"
-          : "Sans projet";
-
-      if (!projectMap.has(effectivePid)) {
-        projectMap.set(effectivePid, {
-          projectName: projName,
-          persons: new Map(),
-          totalAmount: 0,
-          waveIds: new Set(),
-        });
-      }
-      const group = projectMap.get(effectivePid)!;
-      group.waveIds.add(w.id);
       group.totalAmount += alloc.amount;
-
       const personEntry = group.persons.get(alloc.name) || {
         amount: 0,
         contributingWaves: [],

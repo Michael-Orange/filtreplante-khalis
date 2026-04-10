@@ -59,7 +59,6 @@ const updateMetadataSchema = z.object({
       z.object({
         name: z.string().min(1),
         amount: z.number().min(0),
-        projectId: z.string().nullable().optional(),
       })
     )
     .optional(),
