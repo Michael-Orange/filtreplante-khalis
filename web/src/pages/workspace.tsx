@@ -1082,9 +1082,6 @@ function ResumeTab({
   });
   const persons = personsQuery.data ?? [];
 
-  const allDataLoaded =
-    projectsQuery.isSuccess && cashQuery.isSuccess && personsQuery.isSuccess;
-
   const [pendingManualProjectIds, setPendingManualProjectIds] = useState<string[]>([]);
   const [expandedFactureKeys, setExpandedFactureKeys] = useState<Set<string>>(new Set());
 
@@ -1242,26 +1239,18 @@ function ResumeTab({
   );
 
   // ─── Étape 3 — Liaisons wave → facture d'équipe ──────────────
-  // Recalculé à chaque rendu via useMemo. Les dépendances incluent
-  // une signature des données (longueurs + sums) pour détecter les
-  // changements, ET un linksVersion qu'on peut bumper manuellement
-  // via le bouton "Recalculer" (utile si l'utilisateur veut forcer
-  // un recompute sans toucher aux données).
-  const [linksVersion, setLinksVersion] = useState(0);
-
-  // Signature de bas niveau des données : change si waves/cash/projectMap change
-  const dataSignature = `${wavesWithMeta
-    .map((w) => `${w.id}:${w.projectId || ""}:${(w.allocations || []).length}`)
-    .join(",")}|${cashAllocations.length}|${projectMap.size}`;
-
-  const { linkedByFactureKey, totalWaveUnlinked } = useMemo<AutoLinksResult>(
-    () => computeAutoLinks(wavesWithMeta, cashAllocations, projectMap),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [linksVersion, dataSignature, allDataLoaded],
+  // Compute inline a chaque render. Simple et garanti toujours frais.
+  // Le bouton "Recalculer" force juste un re-render (utile en UX mais
+  // pas nécessaire pour la correction).
+  const [, forceRerender] = useState(0);
+  const { linkedByFactureKey, totalWaveUnlinked } = computeAutoLinks(
+    wavesWithMeta,
+    cashAllocations,
+    projectMap,
   );
 
   const handleRefreshLinks = () => {
-    setLinksVersion((v) => v + 1);
+    forceRerender((v) => v + 1);
   };
 
   // ─── Merged project map (wave + cash) for section 3 ─────────
