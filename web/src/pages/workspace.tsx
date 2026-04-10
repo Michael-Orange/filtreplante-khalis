@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
 import { api } from "../lib/api";
@@ -1242,30 +1242,27 @@ function ResumeTab({
   );
 
   // ─── Étape 3 — Liaisons wave → facture d'équipe ──────────────
-  // Stocké dans un state local, recalculé SEULEMENT :
-  //   - au premier rendu où TOUTES les queries (cash, projects,
-  //     persons) sont isSuccess → init via useEffect
-  //   - quand l'utilisateur clique "Recalculer les liaisons"
-  // → les liaisons sont stables entre les changements de données.
-  const [autoLinks, setAutoLinks] = useState<AutoLinksResult>({
-    linkedByFactureKey: new Map(),
-    totalWaveUnlinked: 0,
-  });
-  const linksInitRef = useRef(false);
+  // Recalculé à chaque rendu via useMemo. Les dépendances incluent
+  // une signature des données (longueurs + sums) pour détecter les
+  // changements, ET un linksVersion qu'on peut bumper manuellement
+  // via le bouton "Recalculer" (utile si l'utilisateur veut forcer
+  // un recompute sans toucher aux données).
+  const [linksVersion, setLinksVersion] = useState(0);
 
-  useEffect(() => {
-    if (linksInitRef.current) return;
-    if (!allDataLoaded) return;
-    linksInitRef.current = true;
-    setAutoLinks(computeAutoLinks(wavesWithMeta, cashAllocations, projectMap));
+  // Signature de bas niveau des données : change si waves/cash/projectMap change
+  const dataSignature = `${wavesWithMeta
+    .map((w) => `${w.id}:${w.projectId || ""}:${(w.allocations || []).length}`)
+    .join(",")}|${cashAllocations.length}|${projectMap.size}`;
+
+  const { linkedByFactureKey, totalWaveUnlinked } = useMemo<AutoLinksResult>(
+    () => computeAutoLinks(wavesWithMeta, cashAllocations, projectMap),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allDataLoaded]);
+    [linksVersion, dataSignature, allDataLoaded],
+  );
 
   const handleRefreshLinks = () => {
-    setAutoLinks(computeAutoLinks(wavesWithMeta, cashAllocations, projectMap));
+    setLinksVersion((v) => v + 1);
   };
-
-  const { linkedByFactureKey, totalWaveUnlinked } = autoLinks;
 
   // ─── Merged project map (wave + cash) for section 3 ─────────
   type MergedPerson = {
@@ -1515,8 +1512,9 @@ function ResumeTab({
             Facture par projet et par personne
           </h3>
           <button
+            type="button"
             onClick={handleRefreshLinks}
-            className="flex items-center gap-1.5 text-xs text-pine hover:text-pine-hover bg-pine-light hover:bg-pine-light/80 px-3 py-1.5 rounded-lg font-medium transition-colors"
+            className="cursor-pointer flex items-center gap-1.5 text-xs text-white bg-pine hover:bg-pine-hover active:scale-95 px-3 py-1.5 rounded-lg font-medium transition-all"
             title="Recalcule les liaisons entre règlements wave et factures à partir des données actuelles"
           >
             <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
