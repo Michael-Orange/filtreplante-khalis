@@ -927,16 +927,6 @@ function computeAutoLinks(
   cashAllocations: CashAllocation[],
   projectMap: Map<string, { persons: Map<string, { amount: number }> }>,
 ): AutoLinksResult {
-  console.log("[KHALIS DEBUG] computeAutoLinks called", {
-    wavesWithMetaCount: wavesWithMeta.length,
-    cashAllocationsCount: cashAllocations.length,
-    projectMapSize: projectMap.size,
-    cashSample: cashAllocations.slice(0, 5).map((c) => ({
-      pid: c.projectId.substring(0, 8),
-      name: c.personName,
-      amt: c.amount,
-    })),
-  });
   const linkedByFactureKey = new Map<string, LinkedWaveEntry[]>();
   let totalWaveUnlinked = 0;
 
@@ -1058,14 +1048,6 @@ function computeAutoLinks(
     if (waveRemaining > 0) totalWaveUnlinked += waveRemaining;
   }
 
-  console.log("[KHALIS DEBUG] computeAutoLinks result", {
-    linkedCount: linkedByFactureKey.size,
-    linked: Array.from(linkedByFactureKey.entries()).map(([k, v]) => ({
-      key: k.substring(0, 8) + "|" + k.split("|")[1],
-      waves: v.map((lw) => ({ cp: lw.counterparty, amt: lw.amount })),
-    })),
-    totalWaveUnlinked,
-  });
   return { linkedByFactureKey, totalWaveUnlinked };
 }
 
@@ -1324,11 +1306,17 @@ function ResumeTab({
       });
     }
     const entry = mergedProjectMap.get(pid)!;
+    const factureKey = `${pid}|${c.personName}`;
+    const linkedForThis = linkedByFactureKey.get(factureKey) || [];
+    const factureDateForThis = linkedForThis.reduce<string | null>(
+      (min, w) => (min === null || w.date < min ? w.date : min),
+      null,
+    );
     const existing = entry.persons.get(c.personName) || {
       wave: 0,
       caisse: 0,
-      linkedWaves: [],
-      factureDate: null,
+      linkedWaves: linkedForThis,
+      factureDate: factureDateForThis,
     };
     existing.caisse += Number(c.amount);
     entry.persons.set(c.personName, existing);
