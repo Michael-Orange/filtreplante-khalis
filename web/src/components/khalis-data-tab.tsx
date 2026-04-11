@@ -610,8 +610,12 @@ export function KhalisDataTab({
                         // (après retenue BRS 5%). La prestation brute et la
                         // BRS sont calculées pour affichage uniquement,
                         // aucune logique métier interne ne s'en sert.
-                        const brut = total / 0.95;
-                        const brs = brut - total;
+                        // Seuil métier : BRS non applicable en dessous de
+                        // 25 000 FCFA → on n'affiche que Net dans ce cas.
+                        const BRS_THRESHOLD = 25000;
+                        const hasBrs = total >= BRS_THRESHOLD;
+                        const brut = hasBrs ? total / 0.95 : total;
+                        const brs = hasBrs ? brut - total : 0;
                         return (
                           <div key={name}>
                             <button
@@ -630,11 +634,17 @@ export function KhalisDataTab({
                                     </span>
                                   )}
                                   <span className="text-[11px] text-gray-500 truncate">
-                                    Prestation {formatCFA(brut)}
-                                    <span className="text-gray-300 mx-1">·</span>
-                                    BRS 5% {formatCFA(brs)}
-                                    <span className="text-gray-300 mx-1">·</span>
-                                    Net {formatCFA(total)}
+                                    {hasBrs ? (
+                                      <>
+                                        Prestation {formatCFA(brut)}
+                                        <span className="text-gray-300 mx-1">·</span>
+                                        BRS 5% {formatCFA(brs)}
+                                        <span className="text-gray-300 mx-1">·</span>
+                                        Net {formatCFA(total)}
+                                      </>
+                                    ) : (
+                                      <>Net {formatCFA(total)}</>
+                                    )}
                                   </span>
                                 </div>
                               </div>
