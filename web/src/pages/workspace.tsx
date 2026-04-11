@@ -3,9 +3,17 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
 import { api } from "../lib/api";
 import { formatCFA, formatDate, formatDateShort } from "../lib/format";
+import { useToast } from "../lib/toast";
 import { CsvUpload } from "../components/csv-upload";
 import { SummaryBar } from "../components/summary-bar";
 import { WaveMetadata } from "../components/wave-metadata";
+
+/** Extrait un message d'erreur lisible depuis n'importe quelle erreur. */
+function getErrorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === "string") return err;
+  return "Erreur inconnue";
+}
 
 interface SessionDetail {
   id: string;
@@ -13,6 +21,7 @@ interface SessionDetail {
   dateStart: string;
   dateEnd: string;
   status: string;
+  archived: boolean | null;
   waveTransactions: WaveTransaction[];
 }
 
@@ -100,6 +109,7 @@ export function WorkspacePage() {
   const [, navigate] = useLocation();
   const sessionId = params.id!;
   const queryClient = useQueryClient();
+  const { toast } = useToast();
   const [selectedWaveId, setSelectedWaveId] = useState<string | null>(null);
   const [expandedWaveId, setExpandedWaveId] = useState<string | null>(null);
   const [waveFilter, setWaveFilter] = useState<WaveFilter>("all");
@@ -204,6 +214,7 @@ export function WorkspacePage() {
   const { data: cashAllocationsForSession } = useQuery({
     queryKey: ["cash", sessionId],
     queryFn: () => api.get<CashAllocation[]>(`/api/cash/${sessionId}`),
+    staleTime: 60_000, // 1 min — les cash allocations changent rarement
   });
 
   // Tous les noms de personnes déjà utilisés dans la session (wave
@@ -252,12 +263,18 @@ export function WorkspacePage() {
           <button
             onClick={() => navigate("/")}
             className="text-gray-400 hover:text-gray-600"
+            aria-label="Retour à la liste des sessions"
           >
             &larr;
           </button>
           <div>
-            <h2 className="font-heading font-semibold text-gray-900">
+            <h2 className="font-heading font-semibold text-gray-900 flex items-center gap-2">
               {session.label}
+              {session.archived && (
+                <span className="text-[10px] font-semibold uppercase tracking-wide bg-gray-200 text-gray-600 px-1.5 py-0.5 rounded">
+                  Archivée
+                </span>
+              )}
             </h2>
             <p className="text-xs text-gray-500">
               {formatDate(session.dateStart)} — {formatDate(session.dateEnd)}
@@ -269,6 +286,7 @@ export function WorkspacePage() {
             <button
               onClick={invalidateAll}
               className="text-xs text-gray-400 hover:text-pine transition-colors p-1.5"
+              aria-label="Rafraîchir les factures"
               title="Rafraîchir les factures"
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
@@ -276,6 +294,18 @@ export function WorkspacePage() {
           )}
         </div>
       </div>
+
+      {/* Bannière session archivée — édition bloquée */}
+      {session.archived && (
+        <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 text-xs text-amber-800 flex items-center gap-2 flex-shrink-0">
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="flex-shrink-0">
+            <rect x="3" y="4" width="18" height="4" rx="1"/>
+            <path d="M5 8v12a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8"/>
+            <line x1="10" y1="12" x2="14" y2="12"/>
+          </svg>
+          Session archivée — lecture seule. Désarchivez-la pour reprendre l'édition.
+        </div>
+      )}
 
       {/* Tabs */}
       {dataReady && (
@@ -550,6 +580,7 @@ function WaveLinkPanel({
   const isRFE = !!wave.allocations && wave.allocations.length > 0;
 
   const [pendingInvoiceId, setPendingInvoiceId] = useState<string | null>(null);
+  const { toast } = useToast();
 
   const linkMutation = useMutation({
     mutationFn: (invoiceId: string) =>
@@ -562,21 +593,33 @@ function WaveLinkPanel({
     onMutate: (invoiceId) => setPendingInvoiceId(invoiceId),
     onSuccess: () => {
       setPendingInvoiceId(null);
+      toast("✓ Lié");
       onChanged();
     },
-    onError: () => setPendingInvoiceId(null),
+    onError: (err) => {
+      setPendingInvoiceId(null);
+      toast(getErrorMessage(err), "error");
+    },
   });
 
   // Unlink ALL links for this wave (cascade)
   const unlinkMutation = useMutation({
     mutationFn: () => api.delete(`/api/reconcile/wave/${wave.id}`),
-    onSuccess: () => onChanged(),
+    onSuccess: () => {
+      toast("✓ Délié");
+      onChanged();
+    },
+    onError: (err) => toast(getErrorMessage(err), "error"),
   });
 
   // Unlink a single link by ID
   const unlinkSingleMutation = useMutation({
     mutationFn: (linkId: string) => api.delete(`/api/reconcile/${linkId}`),
-    onSuccess: () => onChanged(),
+    onSuccess: () => {
+      toast("✓ Délié");
+      onChanged();
+    },
+    onError: (err) => toast(getErrorMessage(err), "error"),
   });
 
   // Build a map: invoiceId -> linkIds for this session (to enable per-invoice unlink)
@@ -795,6 +838,7 @@ function SupplierGroup({
 }) {
   const [cashInvoiceId, setCashInvoiceId] = useState<string | null>(null);
   const [cashAmount, setCashAmount] = useState("");
+  const { toast } = useToast();
 
   const cashMutation = useMutation({
     mutationFn: (data: { invoiceId: string; amount: number }) =>
@@ -806,8 +850,10 @@ function SupplierGroup({
     onSuccess: () => {
       setCashInvoiceId(null);
       setCashAmount("");
+      toast("✓ Réglé en espèces");
       onChanged();
     },
+    onError: (err) => toast(getErrorMessage(err), "error"),
   });
 
   const handleAddCash = (invoiceId: string) => {
@@ -939,6 +985,7 @@ function SupplierGroup({
                   <div className="px-3 py-2 bg-gray-50 flex items-center gap-2">
                     <input
                       type="number"
+                      inputMode="numeric"
                       value={cashAmount}
                       onChange={(e) => setCashAmount(e.target.value)}
                       placeholder={`Espèces (max ${Math.round(remaining)})`}
@@ -1298,6 +1345,7 @@ function KhalisDataTab({
   const cashQuery = useQuery({
     queryKey: ["cash", sessionId],
     queryFn: () => api.get<CashAllocation[]>(`/api/cash/${sessionId}`),
+    staleTime: 60_000,
   });
   const cashAllocations = cashQuery.data ?? [];
 
@@ -1323,6 +1371,8 @@ function KhalisDataTab({
   const invalidateCash = () =>
     queryClient.invalidateQueries({ queryKey: ["cash", sessionId] });
 
+  const { toast } = useToast();
+
   const createCashMutation = useMutation({
     mutationFn: (body: {
       projectId: string;
@@ -1335,24 +1385,40 @@ function KhalisDataTab({
         personName: body.personName,
         amount: body.amount,
       }),
-    onSuccess: () => invalidateCash(),
+    onSuccess: () => {
+      toast("✓ Personne ajoutée");
+      invalidateCash();
+    },
+    onError: (err) => toast(getErrorMessage(err), "error"),
   });
 
   const updateCashMutation = useMutation({
     mutationFn: ({ id, amount }: { id: string; amount: number }) =>
       api.patch<CashAllocation>(`/api/cash/${id}`, { amount }),
-    onSuccess: () => invalidateCash(),
+    onSuccess: () => {
+      toast("✓ Enregistré");
+      invalidateCash();
+    },
+    onError: (err) => toast(getErrorMessage(err), "error"),
   });
 
   const deleteCashLineMutation = useMutation({
     mutationFn: (id: string) => api.delete(`/api/cash/${id}`),
-    onSuccess: () => invalidateCash(),
+    onSuccess: () => {
+      toast("✓ Supprimé");
+      invalidateCash();
+    },
+    onError: (err) => toast(getErrorMessage(err), "error"),
   });
 
   const deleteCashBlockMutation = useMutation({
     mutationFn: (projectId: string) =>
       api.delete(`/api/cash/session/${sessionId}/project/${projectId}`),
-    onSuccess: () => invalidateCash(),
+    onSuccess: () => {
+      toast("✓ Bloc supprimé");
+      invalidateCash();
+    },
+    onError: (err) => toast(getErrorMessage(err), "error"),
   });
 
   // Build summary from wave metadata
@@ -1457,7 +1523,9 @@ function KhalisDataTab({
     });
 
   const availableProjectsForAdd = (projects || []).filter(
-    (p) => !blockProjectIds.includes(p.id)
+    // Exclure les projets déjà présents comme bloc ET les projets terminés
+    // (cohérent avec le chevron wave qui masque les terminés sauf le courant)
+    (p) => !blockProjectIds.includes(p.id) && !p.isCompleted,
   );
 
   const handleDeleteBlock = (projectId: string, hasPersisted: boolean) => {
@@ -1784,14 +1852,21 @@ function KhalisDataTab({
             </div>
           );
         })()}
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="font-heading font-semibold text-gray-900">
+        <div className="flex items-center justify-between mb-1">
+          <h3 className="font-heading font-semibold text-gray-900 flex items-center gap-1.5">
             Facture par projet et par personne
+            <span
+              className="text-[10px] font-normal uppercase tracking-wide bg-pine-light text-pine px-1.5 py-0.5 rounded cursor-help"
+              title="Matrice optimisée : les montants par personne × projet sont automatiquement rééquilibrés pour réduire le nombre de factures à générer, tout en préservant les totaux par personne et par projet. Vos saisies brutes (chevrons wave et onglet Rapprochement Caisse) ne sont pas modifiées."
+            >
+              consolidée
+            </span>
           </h3>
           <button
             type="button"
             onClick={handleRefreshLinks}
             className="cursor-pointer flex items-center gap-1.5 text-xs text-white bg-pine hover:bg-pine-hover active:scale-95 px-3 py-1.5 rounded-lg font-medium transition-all"
+            aria-label="Recalculer les liaisons"
             title="Recalcule les liaisons entre règlements wave et factures à partir des données actuelles"
           >
             <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -1800,6 +1875,9 @@ function KhalisDataTab({
             Recalculer les liaisons
           </button>
         </div>
+        <p className="text-xs text-gray-500 mb-3">
+          Les montants ci-dessous sont optimisés pour minimiser le nombre de factures à créer.
+        </p>
         <div className="space-y-3">
           {Array.from(mergedProjectMap.entries()).map(([projId, group]) => {
             const projectTotal = group.projectTotal;

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../lib/api";
 import { formatCFA } from "../lib/format";
+import { useToast } from "../lib/toast";
 
 interface Project {
   id: string;
@@ -68,12 +69,19 @@ export function WaveMetadata({
     setAllocations(currentAllocations.length > 0 ? currentAllocations : []);
   }, [currentProjectId, currentAllocations]);
 
+  const { toast } = useToast();
+
   const saveMutation = useMutation({
     mutationFn: (data: { projectId: string | null; allocations: Allocation[] }) =>
       api.patch(`/api/metadata/transactions/${waveId}`, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["session"] });
+      toast("✓ Enregistré");
       onChanged();
+    },
+    onError: (err: unknown) => {
+      const msg = err instanceof Error ? err.message : "Erreur d'enregistrement";
+      toast(msg, "error");
     },
   });
 
@@ -215,6 +223,7 @@ export function WaveMetadata({
                   <div className="flex-1">
                     <input
                       type="number"
+                      inputMode="numeric"
                       value={alloc.amount || ""}
                       onChange={(e) =>
                         updateAmount(alloc.name, parseInt(e.target.value) || 0)

@@ -4,6 +4,7 @@ import { useAuth } from "./hooks/useAuth";
 import { AppHeader } from "./components/app-header";
 import { SessionsListPage } from "./pages/sessions-list";
 import { WorkspacePage } from "./pages/workspace";
+import { ToastProvider } from "./lib/toast";
 
 class ErrorBoundary extends React.Component<
   { children: React.ReactNode },
@@ -38,22 +39,24 @@ class ErrorBoundary extends React.Component<
 
 function AuthenticatedApp() {
   return (
-    <div className="min-h-screen bg-gray-50">
-      <AppHeader />
-      <main>
-        <ErrorBoundary>
-          <Switch>
-            <Route path="/" component={SessionsListPage} />
-            <Route path="/sessions/:id" component={WorkspacePage} />
-            <Route>
-              <div className="text-center py-16 text-gray-400">
-                Page introuvable
-              </div>
-            </Route>
-          </Switch>
-        </ErrorBoundary>
-      </main>
-    </div>
+    <ToastProvider>
+      <div className="min-h-screen bg-gray-50">
+        <AppHeader />
+        <main>
+          <ErrorBoundary>
+            <Switch>
+              <Route path="/" component={SessionsListPage} />
+              <Route path="/sessions/:id" component={WorkspacePage} />
+              <Route>
+                <div className="text-center py-16 text-gray-400">
+                  Page introuvable
+                </div>
+              </Route>
+            </Switch>
+          </ErrorBoundary>
+        </main>
+      </div>
+    </ToastProvider>
   );
 }
 
