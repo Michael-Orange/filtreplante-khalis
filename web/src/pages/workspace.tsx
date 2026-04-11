@@ -103,7 +103,9 @@ export function WorkspacePage() {
   const [selectedWaveId, setSelectedWaveId] = useState<string | null>(null);
   const [expandedWaveId, setExpandedWaveId] = useState<string | null>(null);
   const [waveFilter, setWaveFilter] = useState<WaveFilter>("all");
-  const [activeTab, setActiveTab] = useState<"rapprochement" | "resume">("rapprochement");
+  const [activeTab, setActiveTab] = useState<
+    "rapprochement-wave" | "rapprochement-caisse" | "resume"
+  >("rapprochement-wave");
 
   const { data: session, isLoading: sessionLoading } = useQuery({
     queryKey: ["session", sessionId],
@@ -263,14 +265,24 @@ export function WorkspacePage() {
       {dataReady && (
         <div className="flex border-b bg-white flex-shrink-0">
           <button
-            onClick={() => setActiveTab("rapprochement")}
+            onClick={() => setActiveTab("rapprochement-wave")}
             className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-              activeTab === "rapprochement"
+              activeTab === "rapprochement-wave"
                 ? "border-pine text-pine"
                 : "border-transparent text-gray-500 hover:text-gray-700"
             }`}
           >
-            Rapprochement
+            Rapprochement Wave
+          </button>
+          <button
+            onClick={() => setActiveTab("rapprochement-caisse")}
+            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === "rapprochement-caisse"
+                ? "border-pine text-pine"
+                : "border-transparent text-gray-500 hover:text-gray-700"
+            }`}
+          >
+            Rapprochement Caisse
           </button>
           <button
             onClick={() => setActiveTab("resume")}
@@ -280,7 +292,7 @@ export function WorkspacePage() {
                 : "border-transparent text-gray-500 hover:text-gray-700"
             }`}
           >
-            Résumé dépenses
+            Résumé
           </button>
         </div>
       )}
@@ -297,13 +309,18 @@ export function WorkspacePage() {
         </div>
       )}
 
-      {/* Resume tab */}
-      {dataReady && activeTab === "resume" && (
-        <ResumeTab waves={session.waveTransactions} sessionId={sessionId} />
-      )}
+      {/* Data tab — kept mounted across cash-editor <-> resume to preserve state */}
+      {dataReady &&
+        (activeTab === "rapprochement-caisse" || activeTab === "resume") && (
+          <KhalisDataTab
+            waves={session.waveTransactions}
+            sessionId={sessionId}
+            view={activeTab === "rapprochement-caisse" ? "cash-editor" : "resume"}
+          />
+        )}
 
       {/* Main content — Wave-centric view */}
-      {dataReady && activeTab === "rapprochement" && (
+      {dataReady && activeTab === "rapprochement-wave" && (
         <div className="flex-1 flex overflow-hidden">
           {/* Left panel — Wave transactions */}
           <div
@@ -1112,12 +1129,14 @@ function computeAutoLinks(
 
 // ─── Resume Tab ───────────────────────────────────────────────────
 
-function ResumeTab({
+function KhalisDataTab({
   waves,
   sessionId,
+  view,
 }: {
   waves: WaveTransaction[];
   sessionId: string;
+  view: "cash-editor" | "resume";
 }) {
   const queryClient = useQueryClient();
 
@@ -1239,6 +1258,19 @@ function ResumeTab({
     }
   }
   const waveGrandTotal = Array.from(personTotals.values()).reduce((s, a) => s + a, 0);
+
+  // Per-person summary across cash allocations (flat, all projects merged)
+  const cashPersonTotals = new Map<string, number>();
+  for (const c of cashAllocations) {
+    cashPersonTotals.set(
+      c.personName,
+      (cashPersonTotals.get(c.personName) || 0) + Number(c.amount),
+    );
+  }
+  const cashGrandTotal = Array.from(cashPersonTotals.values()).reduce(
+    (s, a) => s + a,
+    0,
+  );
 
   // ─── Cash blocks ─────────────────────────────────────
   // Wave project ids = effective project ids (from allocations) excluding "__none__"
@@ -1398,36 +1430,69 @@ function ResumeTab({
 
   return (
     <div className="flex-1 overflow-y-auto">
-      {/* Section 1 — Réglements wave par personne */}
-      <div className="p-4">
-        <h3 className="font-heading font-semibold text-gray-900 mb-3">
-          Réglements wave par personne
-        </h3>
-        <div className="bg-white rounded-xl border border-gray-200 divide-y">
-          {Array.from(personTotals.entries())
-            .sort((a, b) => b[1] - a[1])
-            .map(([name, amount]) => (
-              <div key={name} className="flex items-center justify-between px-4 py-3">
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-full bg-pine-light text-pine flex items-center justify-center text-sm font-semibold">
-                    {name.charAt(0).toUpperCase()}
+      {/* Section 1 — Réglements wave par personne (vue Résumé uniquement) */}
+      {view === "resume" && (
+        <div className="p-4">
+          <h3 className="font-heading font-semibold text-gray-900 mb-3">
+            Réglements wave par personne
+          </h3>
+          <div className="bg-white rounded-xl border border-gray-200 divide-y">
+            {Array.from(personTotals.entries())
+              .sort((a, b) => b[1] - a[1])
+              .map(([name, amount]) => (
+                <div key={name} className="flex items-center justify-between px-4 py-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-full bg-pine-light text-pine flex items-center justify-center text-sm font-semibold">
+                      {name.charAt(0).toUpperCase()}
+                    </div>
+                    <span className="text-sm font-medium text-gray-900">{name}</span>
                   </div>
-                  <span className="text-sm font-medium text-gray-900">{name}</span>
+                  <span className="text-sm font-semibold text-gray-900">
+                    {formatCFA(amount)}
+                  </span>
                 </div>
-                <span className="text-sm font-semibold text-gray-900">
-                  {formatCFA(amount)}
-                </span>
-              </div>
-            ))}
-          <div className="flex items-center justify-between px-4 py-3 bg-gray-50">
-            <span className="text-sm font-semibold text-gray-700">Total</span>
-            <span className="text-sm font-bold text-gray-900">{formatCFA(waveGrandTotal)}</span>
+              ))}
+            <div className="flex items-center justify-between px-4 py-3 bg-gray-50">
+              <span className="text-sm font-semibold text-gray-700">Total</span>
+              <span className="text-sm font-bold text-gray-900">{formatCFA(waveGrandTotal)}</span>
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
-      {/* Section 2 — Réglements Caisse Fatou par personne */}
-      <div className="p-4 pt-0">
+      {/* Réglements caisse par personne — liste plate (vue Résumé uniquement) */}
+      {view === "resume" && cashPersonTotals.size > 0 && (
+        <div className="p-4 pt-0">
+          <h3 className="font-heading font-semibold text-gray-900 mb-3">
+            Réglements caisse par personne
+          </h3>
+          <div className="bg-white rounded-xl border border-gray-200 divide-y">
+            {Array.from(cashPersonTotals.entries())
+              .sort((a, b) => b[1] - a[1])
+              .map(([name, amount]) => (
+                <div key={name} className="flex items-center justify-between px-4 py-3">
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center text-sm font-semibold">
+                      {name.charAt(0).toUpperCase()}
+                    </div>
+                    <span className="text-sm font-medium text-gray-900">{name}</span>
+                  </div>
+                  <span className="text-sm font-semibold text-gray-900">
+                    {formatCFA(amount)}
+                  </span>
+                </div>
+              ))}
+            <div className="flex items-center justify-between px-4 py-3 bg-gray-50">
+              <span className="text-sm font-semibold text-gray-700">Total</span>
+              <span className="text-sm font-bold text-gray-900">{formatCFA(cashGrandTotal)}</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Section 2 — Réglements Caisse Fatou par personne (vue Rapprochement Caisse uniquement) */}
+      {view === "cash-editor" && (
+      <div className="p-4">
         <h3 className="font-heading font-semibold text-gray-900 mb-3">
           Réglements Caisse Fatou par personne
         </h3>
@@ -1470,8 +1535,10 @@ function ResumeTab({
           )}
         </div>
       </div>
+      )}
 
-      {/* Section 3 — Facture par projet et par personne (total wave + caisse) */}
+      {/* Section 3 — Facture par projet et par personne (vue Résumé uniquement) */}
+      {view === "resume" && (
       <div className="p-4 pt-0">
         {(() => {
           const totalWaveRFE = waveGrandTotal;
@@ -1712,6 +1779,7 @@ function ResumeTab({
           })}
         </div>
       </div>
+      )}
     </div>
   );
 }
