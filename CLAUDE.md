@@ -23,13 +23,12 @@ api/                      Backend Cloudflare Worker (Hono + Drizzle)
   src/schema/facture.ts   Lecture cross-schema : invoices, payments, suppliers, projects, categories
 packages/auth/            Copie locale de @filtreplante/auth
 web/
-  src/pages/workspace.tsx Page principale (Rapprochement + Résumé dépenses)
+  src/pages/workspace.tsx Page principale (3 onglets : Rapprochement Wave / Rapprochement Caisse / Résumé)
   src/components/
-    wave-metadata.tsx     Chevron RFE : projet + allocations par personne
-    reconciliation-panel.tsx  UI liaison wave↔facture (rapprochement)
-    wave-metadata.tsx     Chevron sur chaque wave
-    csv-upload.tsx        Upload CSV Wave
-    summary-bar.tsx       Stats session en haut
+    wave-metadata.tsx        Chevron RFE : projet + allocations par personne
+    reconciliation-panel.tsx UI liaison wave↔facture (rapprochement wave)
+    csv-upload.tsx           Upload CSV Wave
+    summary-bar.tsx          Stats session en haut
 ```
 
 ## Auth v2
@@ -63,51 +62,85 @@ Liens wave ↔ facture Fatou pour le rapprochement classique (onglet Rapprocheme
 
 ## Workflow principal
 
-### Onglet 1 — Rapprochement
+L'app est divisée en **3 onglets** (split effectué 2026-04-11, cf. §pièges `KhalisDataTab`) :
+
+### Onglet 1 — Rapprochement Wave
 1. **Import CSV Wave** (bouton en haut) → crée les `wave_transactions`
 2. **Flagger un wave "Règlement facture d'équipe"** via le chevron `WaveMetadata` :
    - Sélectionner le **projet** (dropdown, projets terminés masqués sauf celui déjà sélectionné)
-   - Ajouter les **personnes** concernées avec leurs montants (dropdown + bouton "+ Autre" pour nom libre)
+   - Ajouter les **personnes** concernées avec leurs montants (dropdown + bouton "+ Autre" pour nom libre avec **autocomplete**)
+   - L'autocomplete du bouton `+ Autre` suggère les noms déjà utilisés dans la session (wave chevrons + cash allocations + `referentiel.users`), filtrés par substring case-insensitive (min 2 chars). Cf. §pièges autocomplete.
    - **Validation** : le total des allocations ne peut pas dépasser le montant du wave (bouton Enregistrer désactivé + message rouge explicite si dépassement)
    - Sauvegarder
 3. **Lier un wave à une facture Fatou** (panel droit) : sélectionne la facture, applique le montant. Le spill-over automatique étend aux autres factures du même fournisseur si nécessaire.
 
-### Onglet 2 — Résumé dépenses (3 sections)
-
-**Section 1 — Règlements wave par personne**
-Liste plate des totaux wave par personne (somme des allocations chevron, peu importe le projet).
-
-**Section 2 — Règlements Caisse Fatou par personne**
-Blocs par projet, éditables. Deux sources :
+### Onglet 2 — Rapprochement Caisse (éditeur seul)
+Éditeur dédié des règlements caisse Fatou. Blocs par projet, éditables. Deux sources :
 - **Automatique** : un bloc apparaît dès qu'un projet a des `wave_transactions` avec allocations dans la session. Non supprimable.
-- **Manuel** : bouton `+ Ajouter un projet` → dropdown des projets non encore présents (projets terminés exclus). Ces blocs ont un bouton ✕ pour les supprimer.
+- **Manuel** : bouton `+ Ajouter un projet` → dropdown des projets non encore présents (projets terminés exclus). Bouton ✕ pour supprimer un bloc manuel.
 
 Dans chaque bloc, ajout de personnes via :
 - Dropdown "+ Ajouter une personne" (liste `referentiel.users` actifs, triés alpha)
-- Bouton "+ Autre" → input texte libre avec **autocomplete** (suggestions prefix match sur les noms déjà utilisés dans la session : persons connues + allocations wave + allocations cash)
+- Bouton "+ Autre" → input texte libre avec **autocomplete** (prefix match sur les noms déjà utilisés dans la session)
 
-Chaque ligne a un input montant éditable (sauvegarde auto au blur).
+Chaque ligne a un input montant éditable (sauvegarde auto au blur via `POST /api/cash` upsert). Persisté dans `cash_allocations`.
 
-**Section 3 — Facture par projet et par personne**
-**Calculée dynamiquement** à partir de `(wave.projectId × allocation.name) + cash_allocations`. Pas d'entité stockée en BDD.
+### Onglet 3 — Résumé (lecture seule, 4 sections dans l'ordre)
 
-Bandeau récap en haut avec :
+**Section 1 — Règlements wave par personne** — liste plate des totaux wave par personne (somme des allocations chevron), avatar `bg-pine-light text-pine`.
+
+**Section 2 — Règlements caisse par personne** — liste plate des totaux caisse par personne agrégés sur toute la session, avatar `bg-amber-100 text-amber-700`. Visible uniquement si `cashPersonTotals.size > 0`. Les valeurs viennent des `cash_allocations` bruts (pas de la vue consolidée).
+
+**Section 3 — Bandeau Récapitulatif règlements** :
 - Total des Règlements Wave pour Factures d'équipe (= somme allocations chevron)
 - Total des Règlements Caisse pour Factures d'équipe (= somme cash_allocations)
 - Total règlements (somme)
-- Total factures ci-dessous (avec check de cohérence : doit être égal, sinon warning rouge ⚠)
+- Total factures ci-dessous (cohérence ✓ par construction grâce à la consolidation qui préserve les totaux)
 - Warning orange si `totalWaveUnlinked > 0`
 
-Bouton **Recalculer les liaisons** à côté du titre (force un re-render + recalcul).
+**Section 4 — Facture par projet et par personne** : calculée dynamiquement et **consolidée** pour minimiser le nombre de factures à générer. Pas d'entité stockée en BDD. Cf. §Consolidation ci-dessous.
 
-Chaque facture (project × person) a une flèche d'expand (lecture seule) qui montre :
-- Les waves auto-liés (date, counterparty, montant) — voir §Auto-link ci-dessous
-- La ligne Caisse = `facture_total - sum(linkedWaves)` (complément implicite à régler en caisse, indépendant de ce qui est dans `cash_allocations`)
-- Date facture = date du 1er wave auto-lié (priorité #4 du cahier des charges)
+Bouton **Recalculer les liaisons** à côté du titre (force un re-render + recalcul — techniquement inutile car le calcul est fait inline à chaque render, utile pour le feedback UX).
 
-## Auto-link wave → facture d'équipe (section 3)
+Chaque facture (projet × personne) a une flèche d'expand (lecture seule) qui montre :
+- Les waves auto-liés (date, counterparty, montant)
+- La ligne Caisse = `facture_total - sum(linkedWaves)` (complément implicite à régler en caisse, indépendant de ce qui est dans `cash_allocations` bruts)
+- Date facture = date du 1er wave auto-lié (priorité #4)
 
-Algorithme **pure function** `computeAutoLinks(wavesWithMeta, cashAllocations, projectMap)` exécutée **inline à chaque render** (pas de cache). Voir `web/src/pages/workspace.tsx:925-1052`.
+### Architecture composant : `KhalisDataTab`
+
+Les onglets **Rapprochement Caisse** et **Résumé** partagent un seul composant `KhalisDataTab` (anciennement `ResumeTab`) avec un prop `view: "cash-editor" | "resume"`. Il est monté dès que `activeTab` est l'un des deux → les queries (`cashAllocations`, `projects`, `persons`), les mutations cash, et le state local (`pendingManualProjectIds`, `expandedFactureKeys`) survivent au switch entre ces 2 onglets. Un passage par **Rapprochement Wave** démonte le composant (state perdu, acceptable).
+
+## Consolidation des factures d'équipe (2026-04-11)
+
+Avant de faire l'auto-link, la matrice brute `(personne × projet)` construite depuis `projectMap` (wave allocations) + `cash_allocations` est **consolidée** pour minimiser le nombre de cellules non-nulles — donc le nombre de factures d'équipe à générer. Fichier : `web/src/pages/workspace.tsx`, fonctions toplevel `consolidateFactures` + `findCycleThrough`.
+
+**Principe** : à totaux par ligne (personne) et par colonne (projet) préservés, rééquilibrer les montants pour annuler la plus petite cellule non-nulle. Exemple :
+
+```
+Avant (4 factures)           Après (3 factures)
+  MIFA  CTD                    MIFA  CTD
+Mamadou  100  200            Mamadou  120  180
+Bocar     20   20            Bocar          40
+```
+
+Totaux préservés : Mamadou = 300, Bocar = 40, MIFA = 120, CTD = 220. Bocar n'a plus qu'une facture au lieu de deux. Économie : 1 facture.
+
+**Algo** : annulation de cycle sur la plus petite cellule.
+1. Trier les cellules non-gelées par valeur croissante.
+2. Pour la plus petite, chercher un cycle dans le graphe biparti `{personne ∪ projet, arêtes = cellules non-nulles}` via BFS.
+3. Si cycle trouvé : pivoter avec `delta = min(positions "-" du cycle)` → la cellule est zéro-ée, les totaux ligne/colonne restent intacts.
+4. Sinon, essayer la cellule suivante. Si aucune n'a de cycle → forêt bipartie, support minimum atteint, stop.
+
+**Projets "gelés"** (`frozenProjects`) : leurs cellules ne sont jamais pivotées. Utilisé pour `"__none__"` — les waves sans projet restent visibles comme rappel pour Fatou.
+
+**Propriété** : pour m personnes × n projets non-dégénérés, le support minimum = m + n − 1. Sur matrice 3×3 dense, passage typique de 9 → 5 factures.
+
+**Non-destructif** : `cash_allocations` et `wave.allocations` (chevrons) ne sont **jamais** modifiés. La consolidation est une vue calculée, éphémère, reconstruite à chaque render. Les éditeurs (Rapprochement Caisse, chevron wave) travaillent toujours sur les données brutes.
+
+## Auto-link wave → facture d'équipe
+
+Algorithme **pure function** `computeAutoLinks(wavesWithMeta, factureMatrix)` exécuté **inline à chaque render** (pas de cache). Prend en entrée la matrice **consolidée** (pas le couple `projectMap + cashAllocations`), donc opère sur les factures finales à générer.
 
 **Principe** : chaque wave flagué RFE est auto-lié à **UNE personne cible**. Le wave entier (montant total) est distribué sur les factures de cette personne.
 
@@ -117,17 +150,15 @@ La cascade construit une liste de candidats dans l'ordre de priorité, puis reti
 2. **1ère personne du chevron** : si `allocations[0].name` est dans l'index.
 3. **Toutes les autres personnes** dans l'ordre alphabétique (scan de `personFactureIndex.keys()`).
 
-Si **aucun** candidat n'a une capacité ≥ wave.amount, le wave entier est marqué `totalWaveUnlinked` (warning orange dans le bandeau récap). Exemple concret : wave 54k avec counterparty "Cheikh", Cheikh a 30k de factures → capacité insuffisante, on tente chevron[0] (peut-être aussi Cheikh ou Ibrahima 10k → insuffisant), puis on cherche le premier dans l'index avec ≥ 54k (ex: Mamadou 300k) → attribué à Mamadou.
+Si **aucun** candidat n'a une capacité ≥ wave.amount, le wave entier est marqué `totalWaveUnlinked` (warning orange dans le bandeau récap).
 
-**Construction de `personFactureIndex`** : inclut **toutes** les factures d'équipe visibles en section 3, chevron + cash-only. La capacité = `facture_total` (chevron amount + cash amount).
+**Construction de `personFactureIndex`** : depuis la matrice consolidée directement. Chaque cellule non-nulle `(personName, projectId, amount)` devient une facture `{factureKey: "${projectId}|${personName}", remaining: amount}`.
 
-**Distribution** : factures de la personne triées par `factureKey` alphabétique (`${projectId}|${personName}`, donc ordre UUID arbitraire). Remplissage séquentiel jusqu'à épuisement du wave ou saturation de toutes les factures. Le reliquat part dans `totalWaveUnlinked` (warning dans le bandeau).
+**Distribution** : factures de la personne triées par `factureKey` alphabétique, remplissage séquentiel jusqu'à épuisement du wave ou saturation de toutes les factures. Reliquat → `totalWaveUnlinked`.
 
 **Ordre de traitement des waves** : par `transactionDate` croissante → priorité #4 (facture date = date du 1er wave lié) fonctionne.
 
-**Clé subtile — fusion `mergedProjectMap`** :
-- La boucle sur `projectMap` (factures chevron) récupère bien `linkedByFactureKey.get(factureKey)` pour `linkedWaves`.
-- La boucle suivante sur `cashAllocations` (factures cash-only) doit **aussi** récupérer `linkedByFactureKey.get(factureKey)` sinon les liaisons des factures cash-only sont perdues. Bug déjà corrigé (commit `20cdb59`).
+**`mergedProjectMap`** : reconstruit depuis la matrice consolidée (et non plus depuis `projectMap` + `cashAllocations`). Plus de split `wave/caisse` par cellule — chaque cellule porte un seul `total`. Le bug historique de merge `linkedWaves` pour les factures cash-only (commit `20cdb59`) ne peut plus se reproduire puisque les deux sources sont fusionnées en amont.
 
 ## Pièges spécifiques Khalis
 
@@ -141,9 +172,13 @@ Si **aucun** candidat n'a une capacité ≥ wave.amount, le wave entier est marq
 
 5. **Auto-link `computeAutoLinks` recalculée à chaque render** — Simple et garanti frais, coût négligeable. Pas de useMemo, pas de useState cache. Le bouton "Recalculer les liaisons" existe pour le feedback UX mais techniquement inutile.
 
-6. **Factures d'équipe = calculées, pas stockées** — Il n'y a pas de table `team_invoices` ou équivalent. Les factures sont dérivées à chaque rendu depuis `(wave.projectId × allocations) ∪ cash_allocations`. Conséquence : modifier un chevron wave OU un cash → les factures changent immédiatement.
+6. **Factures d'équipe = calculées, pas stockées** — Il n'y a pas de table `team_invoices` ou équivalent. Les factures sont dérivées à chaque rendu depuis la matrice consolidée `(wave.projectId × allocations) ∪ cash_allocations`. Conséquence : modifier un chevron wave OU un cash → la matrice change, la consolidation se recalcule, les factures affichées changent immédiatement.
 
-7. **1 wave = 1 personne dans la liaison (étape 3)** mais **1 wave = N personnes dans le chevron (étapes 1+2)**. Ces deux niveaux sont faiblement couplés. Le chevron définit les factures à créer, l'auto-link dit "qui paie quoi". Si le counterparty ne matche personne, le fallback est `chevron[0].name` → le wave entier va à la 1ère personne du chevron, les autres personnes du chevron ne reçoivent rien du wave via l'auto-link (mais leurs factures existent toujours grâce à la définition via chevron, et sont "payées par caisse implicite").
+7. **1 wave = 1 personne dans la liaison** (auto-link) mais **1 wave = N personnes dans le chevron**. Ces deux niveaux sont faiblement couplés. Le chevron définit les contributions à la matrice brute, l'auto-link dit "qui paie quoi". Si le counterparty ne matche personne, le fallback est `chevron[0].name` → le wave entier va à la 1ère personne du chevron ; les autres personnes du chevron ne reçoivent rien du wave via l'auto-link (mais leurs factures existent toujours dans la matrice consolidée, et sont "payées par caisse implicite").
+
+8. **Consolidation non-destructive** — La consolidation `consolidateFactures` transforme la vue `mergedProjectMap` mais n'écrit **jamais** dans `cash_allocations` ni dans `wave.allocations`. Si Fatou saisit "Bocar 20k sur CTD" dans Rapprochement Caisse et que la consolidation fait disparaître cette ligne en Résumé, l'entrée BDD reste intacte. La section plate "Règlements caisse par personne" (onglet Résumé) montre toujours les `cash_allocations` bruts (inchangés par la consolidation), pas la vue consolidée.
+
+9. **Autocomplete `+ Autre` — pool de suggestions** — Dans le chevron `WaveMetadata` ET dans les blocs `CashProjectBlock`, le bouton `+ Autre` doit suggérer les noms déjà utilisés dans la session, quelle que soit leur source (wave chevron ou cash allocation). Au niveau `Workspace`, un `sessionPersonNames: string[]` est construit en fusionnant `waveTransactions.allocations[*].name` ∪ `cashAllocations[*].personName` (dédupliqué) et passé en prop à `WaveMetadata`. Bug historique (corrigé 2026-04-11) : `WaveMetadata` ne voyait que `allWaveAllocations` → taper "Ma" ne suggérait pas Mamadou s'il n'avait été saisi qu'en caisse.
 
 ## Routes API
 
