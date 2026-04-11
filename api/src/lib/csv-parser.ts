@@ -8,6 +8,11 @@
  * - Date format: DD/MM/YYYY
  * - Amount: integer, negative = payment (keep), positive = deposit (skip)
  * - Transaction ID: "pt-..." = payment, "LT_..." = deposit
+ *
+ * Le parser gère RFC 4180 minimal : champs entre guillemets doubles
+ * `"..."`, guillemets échappés `""` dans un champ quoté. Nécessaire
+ * pour les counterparty names contenant une virgule (ex: "SARL Durand, M.")
+ * ou un guillemet.
  */
 
 export interface ParsedWaveTransaction {
@@ -23,6 +28,54 @@ export interface ParseResult {
   transactions: ParsedWaveTransaction[];
   warnings: string[];
   totalSkipped: number;
+}
+
+/**
+ * Parse une ligne CSV (RFC 4180 minimal) : gère les champs quotés avec
+ * guillemets doubles et les guillemets échappés `""`. Pas de gestion
+ * des retours-ligne dans les champs (les CSV Wave sont monolines).
+ */
+function parseCsvLine(line: string): string[] {
+  const out: string[] = [];
+  let i = 0;
+  const n = line.length;
+  while (i < n) {
+    let field = "";
+    if (line[i] === '"') {
+      // Champ quoté
+      i++; // skip opening quote
+      while (i < n) {
+        if (line[i] === '"') {
+          if (i + 1 < n && line[i + 1] === '"') {
+            // Guillemet échappé
+            field += '"';
+            i += 2;
+          } else {
+            // Fin du champ quoté
+            i++;
+            break;
+          }
+        } else {
+          field += line[i];
+          i++;
+        }
+      }
+      // Consomme jusqu'à la virgule ou fin
+      while (i < n && line[i] !== ",") i++;
+      if (line[i] === ",") i++;
+    } else {
+      // Champ non quoté
+      while (i < n && line[i] !== ",") {
+        field += line[i];
+        i++;
+      }
+      if (line[i] === ",") i++;
+    }
+    out.push(field);
+  }
+  // Si la ligne se termine par une virgule, ajouter un champ vide
+  if (line.length > 0 && line[line.length - 1] === ",") out.push("");
+  return out;
 }
 
 function parseDateDDMMYYYY(raw: string): string | null {
@@ -73,8 +126,9 @@ export function parseWaveCsv(csvContent: string): ParseResult {
 
   for (let i = 1; i < lines.length; i++) {
     const rawLine = lines[i];
-    // Simple CSV split (Wave CSV doesn't have quoted fields with commas)
-    const cols = rawLine.split(",");
+    // Parser RFC 4180 minimal — gère les champs quotés et les virgules
+    // internes. Nécessaire si un counterparty contient une virgule.
+    const cols = parseCsvLine(rawLine);
 
     if (cols.length < 4) {
       warnings.push(`Ligne ${i + 1}: nombre de colonnes insuffisant — ignorée`);
