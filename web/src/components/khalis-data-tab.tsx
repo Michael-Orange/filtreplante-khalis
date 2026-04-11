@@ -605,6 +605,13 @@ export function KhalisDataTab({
                           0,
                         );
                         const displayCash = Math.max(0, total - linkedWaveSum);
+                        // Breakdown BRS pour aider l'utilisateur à générer la
+                        // facture d'équipe : le montant affiché est le NET
+                        // (après retenue BRS 5%). La prestation brute et la
+                        // BRS sont calculées pour affichage uniquement,
+                        // aucune logique métier interne ne s'en sert.
+                        const brut = total / 0.95;
+                        const brs = brut - total;
                         return (
                           <div key={name}>
                             <button
@@ -622,6 +629,13 @@ export function KhalisDataTab({
                                       Date facture : {formatDateShort(amounts.factureDate)}
                                     </span>
                                   )}
+                                  <span className="text-[11px] text-gray-500 truncate">
+                                    Prestation {formatCFA(brut)}
+                                    <span className="text-gray-300 mx-1">·</span>
+                                    BRS 5% {formatCFA(brs)}
+                                    <span className="text-gray-300 mx-1">·</span>
+                                    Net {formatCFA(total)}
+                                  </span>
                                 </div>
                               </div>
                               <div className="flex items-center gap-2 flex-shrink-0">
