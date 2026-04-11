@@ -350,12 +350,31 @@ app.post("/:sessionId", async (c) => {
       poolASize: poolARows.length,
       poolBSize: poolBRows.length,
       availableCandidates: availableCandidates.length,
-      poolBSample: poolBRows.slice(0, 3).map((b) => ({
-        invoiceId: b.invoiceId,
-        amount: parseFloat(b.amountDisplayTTC),
-        date: b.invoiceDate.toISOString().slice(0, 10),
-        supplierName: b.supplierName,
-        paymentType: b.paymentType,
+      consumedInvoiceCount: consumedByInvoice.size,
+      consumedTotalEntries: Array.from(consumedByInvoice.values()).reduce(
+        (s, arr) => s + arr.length,
+        0,
+      ),
+      poolBSampleWithStatus: poolBRows.slice(0, 6).map((b) => {
+        const amt = parseFloat(b.amountDisplayTTC);
+        const consumedArr = consumedByInvoice.get(b.invoiceId) || [];
+        const wouldConsume =
+          consumedArr.findIndex((v) => Math.abs(v - amt) <= 0.01) !== -1;
+        return {
+          invoiceId: b.invoiceId,
+          amount: amt,
+          date: b.invoiceDate.toISOString().slice(0, 10),
+          supplier: b.supplierName,
+          linksOnInvoice: consumedArr,
+          filteredByMultiset: wouldConsume,
+        };
+      }),
+      availableSample: availableCandidates.slice(0, 10).map((c) => ({
+        kind: c.kind,
+        invoiceId: c.invoiceId,
+        amount: c.amount,
+        date: c.date,
+        supplier: c.supplierName,
       })),
       extStart,
       extEnd,
