@@ -11,15 +11,15 @@ const app = new Hono<{ Bindings: Env }>();
 // --- Schemas ---
 
 const createCashSchema = z.object({
-  sessionId: z.string().min(1),
-  projectId: z.string().min(1),
-  personName: z.string().min(1),
-  amount: z.number().min(0).default(0),
+  sessionId: z.string().min(1).max(100),
+  projectId: z.string().min(1).max(100),
+  personName: z.string().min(1).max(200),
+  amount: z.number().min(0).max(1_000_000_000).default(0),
 });
 
 const updateCashSchema = z.object({
-  amount: z.number().min(0).optional(),
-  personName: z.string().min(1).optional(),
+  amount: z.number().min(0).max(1_000_000_000).optional(),
+  personName: z.string().min(1).max(200).optional(),
 });
 
 // --- Routes ---

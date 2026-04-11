@@ -45,7 +45,13 @@ export const waveTransactions = khalisSchema.table(
   },
   (table) => ({
     sessionIdx: index("wave_txn_session_idx").on(table.sessionId),
-    tidIdx: index("wave_txn_tid_idx").on(table.transactionId),
+    // Unique (session, transaction_id) — garantit au niveau BDD qu'un même
+    // CSV ne peut pas être importé deux fois. Double sécurité avec la
+    // déduplication JS dans import-wave.ts (nécessaire en cas de concurrence).
+    sessionTidUniq: uniqueIndex("wave_txn_session_tid_uniq").on(
+      table.sessionId,
+      table.transactionId,
+    ),
   })
 );
 

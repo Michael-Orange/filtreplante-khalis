@@ -64,12 +64,18 @@ app.post("/:sessionId/import-wave", async (c) => {
       rawLine: t.rawLine,
     }));
 
-    // Insert in batches of 50
-    for (let i = 0; i < rows.length; i += 50) {
-      await db
-        .insert(waveTransactions)
-        .values(rows.slice(i, i + 50));
-    }
+    // Transaction atomique : si un batch échoue, rollback complet →
+    // pas d'import partiel qui laisserait la session dans un état
+    // incohérent. onConflictDoNothing protège aussi contre la race
+    // condition si l'unique index (session_id, transaction_id) accroche.
+    await db.transaction(async (tx) => {
+      for (let i = 0; i < rows.length; i += 50) {
+        await tx
+          .insert(waveTransactions)
+          .values(rows.slice(i, i + 50))
+          .onConflictDoNothing();
+      }
+    });
   }
 
   return c.json({

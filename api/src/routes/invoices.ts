@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { eq, and, isNull, gte, lte, sql } from "drizzle-orm";
+import { eq, and, isNull, gte, lte, sql, inArray } from "drizzle-orm";
 import { createDb } from "../lib/db";
 import { AppError } from "../middleware/error";
 import { sessions, reconciliationLinks } from "../schema/khalis";
@@ -68,7 +68,7 @@ app.get("/:sessionId", async (c) => {
         totalPaid: sql<string>`SUM(${payments.amountPaid})`,
       })
       .from(payments)
-      .where(sql`${payments.invoiceId} IN (${sql.raw(invoiceIds.map((id) => `'${id}'`).join(","))})`)
+      .where(inArray(payments.invoiceId, invoiceIds))
       .groupBy(payments.invoiceId);
 
     for (const p of allPayments) {
@@ -90,8 +90,8 @@ app.get("/:sessionId", async (c) => {
       .where(
         and(
           eq(reconciliationLinks.sessionId, sessionId),
-          sql`${reconciliationLinks.invoiceId} IN (${sql.raw(invoiceIds.map((id) => `'${id}'`).join(","))})`
-        )
+          inArray(reconciliationLinks.invoiceId, invoiceIds),
+        ),
       )
       .groupBy(reconciliationLinks.invoiceId);
 

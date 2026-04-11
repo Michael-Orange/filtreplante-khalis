@@ -53,14 +53,15 @@ app.get("/persons", async (c) => {
 });
 
 const updateMetadataSchema = z.object({
-  projectId: z.string().nullable().optional(),
+  projectId: z.string().max(100).nullable().optional(),
   allocations: z
     .array(
       z.object({
-        name: z.string().min(1),
-        amount: z.number().min(0),
-      })
+        name: z.string().min(1).max(200),
+        amount: z.number().min(0).max(1_000_000_000),
+      }),
     )
+    .max(50) // garde-fou : 50 personnes max sur un wave
     .optional(),
 });
 
@@ -73,6 +74,26 @@ app.patch("/transactions/:id", async (c) => {
   const parsed = updateMetadataSchema.safeParse(body);
   if (!parsed.success) {
     throw new AppError(400, "Données invalides: " + parsed.error.message);
+  }
+
+  // Garde-fou serveur : si on met à jour les allocations, leur somme
+  // ne peut pas dépasser le montant du wave. Double la validation
+  // frontend (qui peut être contournée).
+  if (parsed.data.allocations !== undefined) {
+    const [wave] = await db
+      .select({ amount: waveTransactions.amount })
+      .from(waveTransactions)
+      .where(eq(waveTransactions.id, id));
+    if (!wave) throw new AppError(404, "Transaction Wave introuvable");
+
+    const allocSum = parsed.data.allocations.reduce((s, a) => s + a.amount, 0);
+    const waveAmount = parseFloat(wave.amount);
+    if (allocSum > waveAmount + 0.01) {
+      throw new AppError(
+        400,
+        `Total des allocations (${Math.round(allocSum)} FCFA) supérieur au montant du wave (${Math.round(waveAmount)} FCFA).`,
+      );
+    }
   }
 
   const updates: Record<string, any> = {};

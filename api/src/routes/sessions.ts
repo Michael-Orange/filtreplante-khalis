@@ -13,10 +13,28 @@ import type { Env } from "../types/env";
 const app = new Hono<{ Bindings: Env }>();
 
 const createSessionSchema = z.object({
-  label: z.string().min(1),
+  label: z.string().min(1).max(200),
   dateStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   dateEnd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
 });
+
+const updateSessionSchema = z.object({
+  label: z.string().min(1).max(200).optional(),
+  status: z.string().max(20).optional(),
+  archived: z.boolean().optional(),
+  dateStart: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  dateEnd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+});
+
+/**
+ * Ownership check : un utilisateur non-admin ne peut modifier/supprimer que
+ * les sessions qu'il a créées. Admin peut tout. Retourne le createdBy requis
+ * ou `null` si admin (= pas de filtre).
+ */
+function ownerFilter(user: any): string | null {
+  if (user?.role === "admin") return null;
+  return user?.nom || "__no_one__";
+}
 
 // List sessions (archived hidden unless ?showArchived=true and user is admin)
 app.get("/", async (c) => {
@@ -112,40 +130,62 @@ app.get("/:id", async (c) => {
   return c.json({ ...session, waveTransactions: waves });
 });
 
-// Delete session
+// Delete session (ownership check : créateur ou admin uniquement)
 app.delete("/:id", async (c) => {
   const db = createDb(c.env.DATABASE_URL);
   const sessionId = c.req.param("id");
+  const user = c.get("user" as never) as any;
 
-  const result = await db
-    .delete(sessions)
+  const [existing] = await db
+    .select({ createdBy: sessions.createdBy })
+    .from(sessions)
     .where(eq(sessions.id, sessionId));
+  if (!existing) throw new AppError(404, "Session introuvable");
 
+  const owner = ownerFilter(user);
+  if (owner !== null && existing.createdBy !== owner) {
+    throw new AppError(403, "Cette session appartient à un autre utilisateur");
+  }
+
+  await db.delete(sessions).where(eq(sessions.id, sessionId));
   return c.json({ success: true });
 });
 
-// Update session status
+// Update session (ownership check : créateur ou admin uniquement)
 app.patch("/:id", async (c) => {
   const db = createDb(c.env.DATABASE_URL);
   const sessionId = c.req.param("id");
   const body = await c.req.json();
+  const user = c.get("user" as never) as any;
+
+  const parsed = updateSessionSchema.safeParse(body);
+  if (!parsed.success) {
+    throw new AppError(400, "Données invalides: " + parsed.error.message);
+  }
+
+  const [existing] = await db
+    .select({ createdBy: sessions.createdBy })
+    .from(sessions)
+    .where(eq(sessions.id, sessionId));
+  if (!existing) throw new AppError(404, "Session introuvable");
+
+  const owner = ownerFilter(user);
+  if (owner !== null && existing.createdBy !== owner) {
+    throw new AppError(403, "Cette session appartient à un autre utilisateur");
+  }
 
   const updates: Record<string, any> = {};
-  if (body.status) updates.status = body.status;
-  if (typeof body.archived === "boolean") updates.archived = body.archived;
-  if (body.dateStart) updates.dateStart = body.dateStart;
-  if (body.dateEnd) updates.dateEnd = body.dateEnd;
-  if (body.label) updates.label = body.label;
+  if (parsed.data.label !== undefined) updates.label = parsed.data.label;
+  if (parsed.data.status !== undefined) updates.status = parsed.data.status;
+  if (parsed.data.archived !== undefined) updates.archived = parsed.data.archived;
+  if (parsed.data.dateStart !== undefined) updates.dateStart = parsed.data.dateStart;
+  if (parsed.data.dateEnd !== undefined) updates.dateEnd = parsed.data.dateEnd;
 
   if (Object.keys(updates).length === 0) {
     throw new AppError(400, "Aucune modification");
   }
 
-  await db
-    .update(sessions)
-    .set(updates)
-    .where(eq(sessions.id, sessionId));
-
+  await db.update(sessions).set(updates).where(eq(sessions.id, sessionId));
   return c.json({ success: true });
 });
 
