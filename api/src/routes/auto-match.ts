@@ -168,8 +168,11 @@ app.post("/:sessionId", async (c) => {
     );
 
   // --- Étape 3 : construire le multiset des montants Wave déjà liés ---
-  // On balaye toutes les sessions (pas seulement la courante), car une
-  // facture peut avoir été rapprochée dans une session précédente.
+  // Uniquement les liens de la SESSION COURANTE. Les autres sessions
+  // (archivées, supprimées, ou juste anciennes) ne doivent pas bloquer
+  // le rapprochement d'une nouvelle session — chaque session est autonome.
+  // Si Fatou a déjà rapproché manuellement des waves dans cette session,
+  // leurs liens consomment correctement les paiements/dépenses concernés.
   const candidateInvoiceIds = new Set<string>();
   for (const p of poolARows) candidateInvoiceIds.add(p.invoiceId);
   for (const b of poolBRows) candidateInvoiceIds.add(b.invoiceId);
@@ -184,6 +187,7 @@ app.post("/:sessionId", async (c) => {
       .from(reconciliationLinks)
       .where(
         and(
+          eq(reconciliationLinks.sessionId, sessionId),
           inArray(
             reconciliationLinks.invoiceId,
             Array.from(candidateInvoiceIds),
