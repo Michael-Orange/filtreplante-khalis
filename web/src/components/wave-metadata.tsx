@@ -24,7 +24,9 @@ interface Props {
   waveAmount: number;
   currentProjectId: string | null;
   currentAllocations: Allocation[];
-  allWaveAllocations: Allocation[];
+  /** Tous les noms de personnes déjà utilisés dans la session (wave
+   * chevrons + cash allocations), pour l'autocomplete du champ "+ Autre". */
+  sessionPersonNames: string[];
   onChanged: () => void;
 }
 
@@ -33,7 +35,7 @@ export function WaveMetadata({
   waveAmount,
   currentProjectId,
   currentAllocations,
-  allWaveAllocations,
+  sessionPersonNames,
   onChanged,
 }: Props) {
   const queryClient = useQueryClient();
@@ -120,14 +122,13 @@ export function WaveMetadata({
     (p) => !allocations.some((a) => a.name === p.name)
   );
 
-  // Collect all unique manual names from all waves (for autocomplete)
+  // Noms manuels : tout ce qui a été saisi dans la session (wave
+  // chevrons + cash allocations) et qui n'est pas dans la liste
+  // officielle des users. Fusionnés ensuite avec knownPersonNames
+  // pour le pool final de suggestions.
   const knownPersonNames = persons?.map((p) => p.name) || [];
   const manualNames = Array.from(
-    new Set(
-      allWaveAllocations
-        .map((a) => a.name)
-        .filter((n) => !knownPersonNames.includes(n))
-    )
+    new Set(sessionPersonNames.filter((n) => !knownPersonNames.includes(n))),
   );
 
   // Suggestions for manual input

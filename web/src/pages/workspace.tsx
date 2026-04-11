@@ -198,11 +198,27 @@ export function WorkspacePage() {
     return invoices.filter((inv) => inv.reconStatus === "pending");
   }, [invoices]);
 
-  // All allocations across all waves (for autocomplete) — must be before conditional returns
-  const allWaveAllocations = useMemo(() => {
-    if (!session) return [];
-    return session.waveTransactions.flatMap((w) => w.allocations || []);
-  }, [session]);
+  // Cash allocations à ce niveau pour les partager avec WaveMetadata
+  // (autocomplete des noms déjà saisis manuellement dans la session,
+  // que ce soit en chevron wave OU en rapprochement caisse).
+  const { data: cashAllocationsForSession } = useQuery({
+    queryKey: ["cash", sessionId],
+    queryFn: () => api.get<CashAllocation[]>(`/api/cash/${sessionId}`),
+  });
+
+  // Tous les noms de personnes déjà utilisés dans la session (wave
+  // chevrons + cash allocations), dédupliqués. Pour l'autocomplete du
+  // chevron wave-metadata. Doit être avant les returns conditionnels.
+  const sessionPersonNames = useMemo(() => {
+    const set = new Set<string>();
+    if (session) {
+      for (const w of session.waveTransactions) {
+        for (const a of w.allocations || []) set.add(a.name);
+      }
+    }
+    for (const c of cashAllocationsForSession || []) set.add(c.personName);
+    return Array.from(set);
+  }, [session, cashAllocationsForSession]);
 
   const invalidateAll = () => {
     queryClient.invalidateQueries({ queryKey: ["invoices", sessionId] });
@@ -444,7 +460,7 @@ export function WorkspacePage() {
                             waveAmount={waveAmt}
                             currentProjectId={wave.projectId}
                             currentAllocations={wave.allocations || []}
-                            allWaveAllocations={allWaveAllocations}
+                            sessionPersonNames={sessionPersonNames}
                             onChanged={invalidateAll}
                           />
                         )}
