@@ -11,30 +11,45 @@ App de rapprochement des paiements Wave Business avec les factures du schéma `f
 ```
 api/                      Backend Cloudflare Worker (Hono + Drizzle)
   src/routes/
-    sessions.ts           CRUD sessions + compteurs waveCount/linkCount
-    import-wave.ts        Import CSV Wave Business → wave_transactions
+    sessions.ts           CRUD sessions + compteurs waveCount/linkCount (ownership check PATCH/DELETE)
+    import-wave.ts        Import CSV Wave Business → wave_transactions (db.transaction + onConflictDoNothing)
     invoices.ts           Lecture factures Fatou non archivées de la période
-    reconcile.ts          Linker wave ↔ facture (spill-over même fournisseur)
+    reconcile.ts          Linker wave ↔ facture (spill-over même fournisseur, db.transaction)
     auto-match.ts         Suggestions match amount + date ±5j
-    metadata.ts           PATCH wave allocations (projectId + allocations JSONB)
+    metadata.ts           PATCH wave allocations (projectId + allocations JSONB, validation sum ≤ wave.amount)
     cash.ts               CRUD cash_allocations (session × project × person)
     summary.ts            Totaux session (waves, cash, orphelins)
   src/schema/khalis.ts    4 tables : sessions, wave_transactions, cash_allocations, reconciliation_links
+                          + uniqueIndex (session_id, transaction_id) sur wave_transactions
   src/schema/facture.ts   Lecture cross-schema : invoices, payments, suppliers, projects, categories
+  src/lib/csv-parser.ts   Parser RFC 4180 minimal (champs quotés, guillemets échappés)
+  migrations/             Migrations SQL manuelles à appliquer sur Neon
 packages/auth/            Copie locale de @filtreplante/auth
 web/
-  src/pages/workspace.tsx Page principale (3 onglets : Rapprochement Wave / Rapprochement Caisse / Résumé)
+  src/pages/workspace.tsx Orchestrateur (~360 l) — queries session/invoices/links/summary/cash,
+                          montage des 3 onglets (Rapprochement Wave / Caisse / Résumé)
   src/components/
+    khalis-data-tab.tsx      Onglets Caisse + Résumé — queries cash/projects/persons,
+                              consolidation, mergedProjectMap, rendu 4 sections (~710 l)
+    wave-link-panel.tsx      Panel droit Rapprochement Wave (liaison facture fournisseur)
+                              + SupplierGroup interne (~490 l)
+    cash-project-block.tsx   Bloc éditeur cash par projet + CashLineRow + AddProjectButton (~320 l)
+    wave-row.tsx             Une ligne de la liste waves (panel gauche Rapprochement Wave)
     wave-metadata.tsx        Chevron RFE : projet + allocations par personne
-    reconciliation-panel.tsx UI liaison wave↔facture (rapprochement wave)
     csv-upload.tsx           Upload CSV Wave
     summary-bar.tsx          Stats session en haut
+    app-header.tsx           Header global avec user menu
   src/lib/
+    consolidate.ts           Pure fn : consolidateFactures + findCycleThrough (pas de React)
+    auto-link.ts             Pure fn : computeAutoLinks (pas de React)
     toast.tsx                Système de toast minimal (ToastProvider + useToast)
     format.ts                formatCFA / formatDate / formatDateShort (fr-FR)
-    api.ts                   Wrapper fetch Bearer + timeout + error wrapping
-api/
-  migrations/                Migrations SQL manuelles (à appliquer sur Neon)
+    api.ts                   Wrapper fetch Bearer + timeout + ApiError + getErrorMessage
+  src/types/
+    khalis.ts                Interfaces partagées (SessionDetail, WaveTransaction,
+                              CashAllocation, Project, InvoiceRow, ReconciliationLink,
+                              Summary, WaveFilter, WaveLinkEntry)
+  src/hooks/useAuth.ts       Wrapper @filtreplante/auth/frontend
 ```
 
 ## Auth v2
@@ -203,6 +218,15 @@ Si **aucun** candidat n'a une capacité ≥ wave.amount, le wave entier est marq
 17. **Bannière session archivée** (2026-04-11) — Badge "Archivée" dans le titre + bandeau ambré sous le header. Signal visuel fort pour éviter d'éditer une session figée. Le blocage effectif des mutations côté backend/frontend reste à faire si ça devient un problème concret.
 
 18. **Badge "consolidée" sur Section Résumé** (2026-04-11) — Petit pill explicatif sur le titre "Facture par projet et par personne", avec tooltip expliquant que la matrice est optimisée et que les données brutes (chevrons wave, cash_allocations) ne sont pas modifiées. Répond à la confusion "où est ma facture Bocar×CTD ?".
+
+19. **Refactor workspace.tsx en 8 fichiers** (2026-04-11) — L'ancien monolithe de 2329 lignes a été découpé en modules spécialisés pour améliorer la maintenabilité. `pages/workspace.tsx` est désormais un **orchestrateur pur** (~360 lignes) qui ne fait que charger les queries principales et déléguer le rendu aux sous-composants. Les pure functions (`consolidateFactures`, `computeAutoLinks`) vivent dans `lib/` sans dépendance React et peuvent être testées en isolation. Les types de données sont centralisés dans `types/khalis.ts` (point de vérité pour les modèles API).
+
+    **Propriétés préservées après refactor** :
+    - Clés React Query identiques (`["session", sessionId]`, `["cash", sessionId]`, `["allLinks", sessionId]`, `["invoices", sessionId]`, `["summary", sessionId]`, `["projects"]`, `["persons"]`) → aucun impact sur le cache partagé entre composants
+    - `KhalisDataTab` reste monté tant que `activeTab ∈ {rapprochement-caisse, resume}` → state local (`pendingManualProjectIds`, `expandedFactureKeys`) et caches survivent au switch
+    - Exports tous nommés (pas de `default`) pour faciliter les imports groupés
+
+    **Règle pour les futures modifications** : tout ajout de composant doit préférer un nouveau fichier dans `components/` plutôt qu'une fonction inline dans `workspace.tsx`. Toute logique pure (calcul, transformation de données) doit aller dans `lib/` pour rester testable. Si `workspace.tsx` dépasse 500 lignes, c'est le signal qu'un nouveau composant doit être extrait.
 
 ## Routes API
 
