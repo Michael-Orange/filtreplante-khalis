@@ -228,6 +228,15 @@ Si **aucun** candidat n'a une capacité ≥ wave.amount, le wave entier est marq
 
     **Règle pour les futures modifications** : tout ajout de composant doit préférer un nouveau fichier dans `components/` plutôt qu'une fonction inline dans `workspace.tsx`. Toute logique pure (calcul, transformation de données) doit aller dans `lib/` pour rester testable. Si `workspace.tsx` dépasse 500 lignes, c'est le signal qu'un nouveau composant doit être extrait.
 
+20. **Breakdown BRS sur chaque facture d'équipe** (2026-04-11) — Section Résumé, sur chaque ligne facture (projet × personne), un bandeau en `text-[11px] text-gray-500` sous le nom affiche le détail nécessaire à la génération de la facture externe. Le **montant affiché à droite reste le NET** (inchangé, utilisé par tous les calculs internes). Les valeurs supplémentaires sont purement pour l'UI :
+
+    - `brut (Prestation) = net / 0.95`
+    - `BRS 5% = brut - net`
+
+    **Seuil métier : < 25 000 FCFA → pas de BRS.** Pour ces factures, le bandeau affiche uniquement `Net X FCFA`. Le seuil est **inclusif** (`total >= 25000` → BRS appliqué). Voir `components/khalis-data-tab.tsx` constante `BRS_THRESHOLD`.
+
+    **Aucune logique métier ne consomme ces valeurs** — elles existent uniquement pour aider l'utilisateur à copier-coller vers le document de facture hors de l'app. Ne pas les réutiliser pour des calculs internes (la source de vérité reste le `total` net).
+
 ## Routes API
 
 | Méthode | Route | Rôle |
