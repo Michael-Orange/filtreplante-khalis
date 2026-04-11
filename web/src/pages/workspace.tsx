@@ -1,8 +1,9 @@
 import { useState, useMemo } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { useParams, useLocation } from "wouter";
-import { api } from "../lib/api";
+import { api, getErrorMessage } from "../lib/api";
 import { formatDate } from "../lib/format";
+import { useToast } from "../lib/toast";
 import { CsvUpload } from "../components/csv-upload";
 import { SummaryBar } from "../components/summary-bar";
 import { WaveLinkPanel } from "../components/wave-link-panel";
@@ -29,6 +30,7 @@ export function WorkspacePage() {
   const [, navigate] = useLocation();
   const sessionId = params.id!;
   const queryClient = useQueryClient();
+  const { toast } = useToast();
   const [selectedWaveId, setSelectedWaveId] = useState<string | null>(null);
   const [expandedWaveId, setExpandedWaveId] = useState<string | null>(null);
   const [waveFilter, setWaveFilter] = useState<WaveFilter>("all");
@@ -148,6 +150,36 @@ export function WorkspacePage() {
     queryClient.invalidateQueries({ queryKey: ["session", sessionId] });
     queryClient.invalidateQueries({ queryKey: ["allLinks", sessionId] });
   };
+
+  // Auto-rapprochement : matche chaque wave non-RFE avec une ligne
+  // facture.payments (Wave) ou une dépense one-shot Wave quand un
+  // candidat unique existe (montant exact + date ±1j). Voir backend
+  // routes/auto-match.ts pour le détail.
+  const autoMatchMutation = useMutation({
+    mutationFn: () =>
+      api.post<{
+        matched: number;
+        ambiguous: number;
+        unmatched: number;
+        totalCandidates: number;
+      }>(`/api/auto-match/${sessionId}`),
+    onSuccess: (res) => {
+      invalidateAll();
+      if (res.totalCandidates === 0) {
+        toast("Aucun règlement à rapprocher");
+      } else if (res.matched === 0) {
+        toast(
+          `Aucun match automatique. ${res.ambiguous} ambigu${res.ambiguous > 1 ? "s" : ""}, ${res.unmatched} sans candidat.`,
+        );
+      } else {
+        const parts = [`${res.matched} rapproché${res.matched > 1 ? "s" : ""}`];
+        if (res.ambiguous > 0) parts.push(`${res.ambiguous} ambigu${res.ambiguous > 1 ? "s" : ""}`);
+        if (res.unmatched > 0) parts.push(`${res.unmatched} sans candidat`);
+        toast(`✓ ${parts.join(" · ")}`);
+      }
+    },
+    onError: (err) => toast(getErrorMessage(err), "error"),
+  });
 
   if (sessionLoading) {
     return (
@@ -285,8 +317,8 @@ export function WorkspacePage() {
               selectedWaveId ? "hidden lg:flex" : "flex"
             } flex-col flex-1 lg:max-w-[55%] border-r overflow-hidden`}
           >
-            {/* Filter chips */}
-            <div className="flex gap-2 px-4 py-2 border-b bg-gray-50 flex-shrink-0">
+            {/* Filter chips + auto-match */}
+            <div className="flex gap-2 px-4 py-2 border-b bg-gray-50 flex-shrink-0 items-center">
               {(
                 [
                   ["all", `Tous (${totalWaves})`],
@@ -306,6 +338,14 @@ export function WorkspacePage() {
                   {label}
                 </button>
               ))}
+              <button
+                onClick={() => autoMatchMutation.mutate()}
+                disabled={autoMatchMutation.isPending}
+                className="ml-auto text-xs px-3 py-1 rounded-full font-medium bg-pine text-white hover:bg-pine-hover disabled:opacity-50 transition-colors"
+                title="Lier automatiquement les règlements Wave aux factures/dépenses Facture quand un unique candidat matche (montant exact + date ±1j)"
+              >
+                {autoMatchMutation.isPending ? "Rapprochement..." : "Auto-rapprocher"}
+              </button>
             </div>
 
             {/* Wave transaction list */}

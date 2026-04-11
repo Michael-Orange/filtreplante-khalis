@@ -237,6 +237,27 @@ Si **aucun** candidat n'a une capacité ≥ wave.amount, le wave entier est marq
 
     **Aucune logique métier ne consomme ces valeurs** — elles existent uniquement pour aider l'utilisateur à copier-coller vers le document de facture hors de l'app. Ne pas les réutiliser pour des calculs internes (la source de vérité reste le `total` net).
 
+21. **Auto-rapprochement Khalis → Facture** (2026-04-11) — `POST /api/auto-match/:sessionId` (réécriture complète de l'ancien endpoint de suggestions). Le bouton **Auto-rapprocher** dans la barre de filtres de l'onglet Rapprochement Wave crée directement les `reconciliation_links` sans passer par une modale de revue.
+
+    **Algorithme** (`api/src/routes/auto-match.ts`) :
+    - **Filtrage waves** : on ignore les waves flaggés RFE (`projectId` non-null OU `allocations` non-vide) et les waves déjà partiellement liés dans la session courante. On traite le reste par ordre `transactionDate` ASC.
+    - **Pool A** — lignes `facture.payments` avec `paymentType ILIKE '%Wave%'` dont la facture parente est Fatou, non-archivée, `invoiceType='supplier_invoice'`.
+    - **Pool B** — factures `invoiceType='expense'` de Fatou dont `invoice.paymentType ILIKE '%Wave%'` (pas de ligne `payments`, le règlement est porté par la facture elle-même).
+    - **Période** : `[session.dateStart − 1j, session.dateEnd + 1j]` pour absorber les écarts en bord de session. Pool A filtre sur `payments.paymentDate`, Pool B sur `invoices.invoiceDate`.
+    - **Multiset consommé** : pour éviter qu'une ligne déjà rapprochée (même dans une session antérieure) soit reprise, on charge TOUS les `reconciliation_links` existants (toutes sessions confondues) pour les invoices candidates et on soustrait un multiset par `invoiceId`. Soustraction `|v1 − v2| ≤ 0.01`. Pool A trié par `paymentDate` ASC pour un résultat déterministe.
+    - **Matching** : pour chaque wave W, candidats = `{c ∈ poolA ∪ poolB disponibles : |c.amount − W.amount| ≤ 0.01 ET |c.date − W.transactionDate| ≤ 1j}`. 0 candidat → `unmatched`, 1 candidat → `matched` (lien créé, candidat consommé dans le run), ≥2 candidats → `ambiguous` (laissé manuel).
+    - **Insertion atomique** : tous les liens dans un seul `db.transaction()`.
+
+    **Idempotent** : re-cliquer exclut les waves déjà liés à l'étape 1. Fatou peut cliquer plusieurs fois sans risque de doublons.
+
+    **Déclenchement UI** : bouton dans `pages/workspace.tsx` (barre de filtres de l'onglet Rapprochement Wave). La mutation invalide `["allLinks", sessionId]`, `["invoices", sessionId]`, `["summary", sessionId]` au succès. Toast récapitulatif : `N rapprochés · M ambigus · K sans candidat`.
+
+    **Cas non couverts volontairement** :
+    - Waves avec liens partiels préexistants (rare, on laisse Fatou finir).
+    - Candidats ambigus : jamais matchés automatiquement.
+    - Paiements non-Wave dans `facture.payments` : filtrés par `ILIKE '%Wave%'`.
+    - Factures d'un autre user que Fatou : filtrées (hardcode §1).
+
 ## Routes API
 
 | Méthode | Route | Rôle |
@@ -253,7 +274,7 @@ Si **aucun** candidat n'a une capacité ≥ wave.amount, le wave entier est marq
 | GET | `/api/reconcile/session/:sessionId` | Liste links d'une session |
 | DELETE | `/api/reconcile/:id` | Délier |
 | GET | `/api/summary/:sessionId` | Totaux (imported, reconciled, orphelins) |
-| POST | `/api/auto-match/:sessionId` | Suggestions auto (exact amount + date ±5j) |
+| POST | `/api/auto-match/:sessionId` | Auto-rapprochement : crée les liens pour les waves non-RFE dont le montant+date matchent une ligne `facture.payments` Wave ou une dépense one-shot Wave avec **un seul candidat**. Montant exact ±0,01, date ±1j, multiset pour éviter double-match. Ambigus et sans candidat laissés manuels. Retourne `{matched, ambiguous, unmatched, totalCandidates, details}`. Cf. piège §21. |
 | GET | `/api/metadata/projects` | Projets (schema facture) pour dropdown |
 | GET | `/api/metadata/persons` | Users actifs (exclut Fatou/Marine/Michael) + Bocar |
 | PATCH | `/api/metadata/transactions/:id` | Mettre à jour projectId + allocations d'un wave |
