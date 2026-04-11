@@ -97,15 +97,26 @@ export function WorkspacePage() {
     return map;
   }, [allLinks]);
 
+  // Un wave est considéré "traité" s'il a soit un lien de rapprochement
+  // classique (waveToLinks) soit des allocations RFE (son règlement est
+  // géré par l'auto-link dans l'onglet Résumé). Les deux catégories
+  // tombent dans le bucket "OK" de la barre de filtres.
+  const isWaveHandled = (w: { id: string; allocations?: { name: string; amount: number }[] | null }) => {
+    if (waveToLinks[w.id]) return true;
+    if (w.allocations && w.allocations.length > 0) return true;
+    return false;
+  };
+
   // Filter and sort waves by date
   const filteredWaves = useMemo(() => {
     if (!session) return [];
     let waves = [...session.waveTransactions];
-    if (waveFilter === "linked") waves = waves.filter((w) => waveToLinks[w.id]);
-    if (waveFilter === "unlinked") waves = waves.filter((w) => !waveToLinks[w.id]);
+    if (waveFilter === "linked") waves = waves.filter(isWaveHandled);
+    if (waveFilter === "unlinked") waves = waves.filter((w) => !isWaveHandled(w));
     // Always sort by date
     waves.sort((a, b) => new Date(a.transactionDate).getTime() - new Date(b.transactionDate).getTime());
     return waves;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session, waveFilter, waveToLinks]);
 
   const selectedWave = session?.waveTransactions.find((w) => w.id === selectedWaveId);
@@ -195,7 +206,9 @@ export function WorkspacePage() {
     );
   }
 
-  const linkedCount = Object.keys(waveToLinks).length;
+  // Compteurs cohérents avec isWaveHandled : un wave OK est soit lié
+  // (waveToLinks) soit RFE (avec allocations chevron).
+  const handledCount = session.waveTransactions.filter(isWaveHandled).length;
   const totalWaves = session.waveTransactions.length;
 
   return (
@@ -322,8 +335,8 @@ export function WorkspacePage() {
               {(
                 [
                   ["all", `Tous (${totalWaves})`],
-                  ["unlinked", `A faire (${totalWaves - linkedCount})`],
-                  ["linked", `OK (${linkedCount})`],
+                  ["unlinked", `A faire (${totalWaves - handledCount})`],
+                  ["linked", `OK (${handledCount})`],
                 ] as [WaveFilter, string][]
               ).map(([key, label]) => (
                 <button
