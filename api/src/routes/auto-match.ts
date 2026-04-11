@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { eq, and, isNull, gte, lte, ilike, inArray, sql } from "drizzle-orm";
+import { eq, and, isNull, gte, lte, inArray, sql } from "drizzle-orm";
 import { createDb } from "../lib/db";
 import { AppError } from "../middleware/error";
 import {
@@ -117,6 +117,8 @@ app.post("/:sessionId", async (c) => {
   }
 
   // --- Étape 2a : Pool A — paiements supplier_invoice avec paymentType Wave ---
+  // Utilisation de `sql` raw pour le filtre ILIKE — certains opérateurs
+  // Drizzle se comportent de manière inattendue avec neon-serverless.
   const poolARows = await db
     .select({
       paymentId: payments.id,
@@ -134,7 +136,7 @@ app.post("/:sessionId", async (c) => {
         eq(invoices.userName, "Fatou"),
         isNull(invoices.archive),
         eq(invoices.invoiceType, "supplier_invoice"),
-        ilike(payments.paymentType, "%Wave%"),
+        sql`${payments.paymentType} ILIKE '%Wave%'`,
         gte(payments.paymentDate, extStart),
         lte(payments.paymentDate, extEnd),
       ),
@@ -148,6 +150,7 @@ app.post("/:sessionId", async (c) => {
       invoiceId: invoices.id,
       amountDisplayTTC: invoices.amountDisplayTTC,
       invoiceDate: invoices.invoiceDate,
+      paymentType: invoices.paymentType,
       supplierName: suppliers.name,
       invoiceNumber: invoices.invoiceNumber,
     })
@@ -158,7 +161,7 @@ app.post("/:sessionId", async (c) => {
         eq(invoices.userName, "Fatou"),
         isNull(invoices.archive),
         eq(invoices.invoiceType, "expense"),
-        ilike(invoices.paymentType, "%Wave%"),
+        sql`${invoices.paymentType} ILIKE '%Wave%'`,
         gte(invoices.invoiceDate, extStartDate),
         lte(invoices.invoiceDate, extEndDate),
       ),
@@ -340,6 +343,23 @@ app.post("/:sessionId", async (c) => {
     ambiguous,
     unmatched,
     totalCandidates: candidateWaves.length,
+    // Diagnostic — tailles des pools et exemples pour debug
+    diag: {
+      totalWaves: allWaves.length,
+      candidateWaves: candidateWaves.length,
+      poolASize: poolARows.length,
+      poolBSize: poolBRows.length,
+      availableCandidates: availableCandidates.length,
+      poolBSample: poolBRows.slice(0, 3).map((b) => ({
+        invoiceId: b.invoiceId,
+        amount: parseFloat(b.amountDisplayTTC),
+        date: b.invoiceDate.toISOString().slice(0, 10),
+        supplierName: b.supplierName,
+        paymentType: b.paymentType,
+      })),
+      extStart,
+      extEnd,
+    },
     details,
   });
 });
