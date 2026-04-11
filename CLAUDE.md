@@ -29,6 +29,12 @@ web/
     reconciliation-panel.tsx UI liaison wave↔facture (rapprochement wave)
     csv-upload.tsx           Upload CSV Wave
     summary-bar.tsx          Stats session en haut
+  src/lib/
+    toast.tsx                Système de toast minimal (ToastProvider + useToast)
+    format.ts                formatCFA / formatDate / formatDateShort (fr-FR)
+    api.ts                   Wrapper fetch Bearer + timeout + error wrapping
+api/
+  migrations/                Migrations SQL manuelles (à appliquer sur Neon)
 ```
 
 ## Auth v2
@@ -179,6 +185,24 @@ Si **aucun** candidat n'a une capacité ≥ wave.amount, le wave entier est marq
 8. **Consolidation non-destructive** — La consolidation `consolidateFactures` transforme la vue `mergedProjectMap` mais n'écrit **jamais** dans `cash_allocations` ni dans `wave.allocations`. Si Fatou saisit "Bocar 20k sur CTD" dans Rapprochement Caisse et que la consolidation fait disparaître cette ligne en Résumé, l'entrée BDD reste intacte. La section plate "Règlements caisse par personne" (onglet Résumé) montre toujours les `cash_allocations` bruts (inchangés par la consolidation), pas la vue consolidée.
 
 9. **Autocomplete `+ Autre` — pool de suggestions** — Dans le chevron `WaveMetadata` ET dans les blocs `CashProjectBlock`, le bouton `+ Autre` doit suggérer les noms déjà utilisés dans la session, quelle que soit leur source (wave chevron ou cash allocation). Au niveau `Workspace`, un `sessionPersonNames: string[]` est construit en fusionnant `waveTransactions.allocations[*].name` ∪ `cashAllocations[*].personName` (dédupliqué) et passé en prop à `WaveMetadata`. Bug historique (corrigé 2026-04-11) : `WaveMetadata` ne voyait que `allWaveAllocations` → taper "Ma" ne suggérait pas Mamadou s'il n'avait été saisi qu'en caisse.
+
+10. **Authz ownership sur sessions** (2026-04-11) — `PATCH /api/sessions/:id` et `DELETE /api/sessions/:id` vérifient que `session.createdBy === user.nom` avant d'appliquer la modification. Les admins (`user.role === "admin"`) contournent ce filtre. Sans cette vérification, tout utilisateur authentifié pouvait modifier/supprimer la session d'un autre.
+
+11. **Transactions atomiques sur les opérations multi-étapes** (2026-04-11) — `POST /api/sessions/:id/import-wave` et `POST /api/reconcile` sont entièrement wrapped dans `db.transaction()` (via `drizzle-orm/neon-serverless` avec `Pool`, qui supporte les transactions contrairement à `neon-http`). Import : plus de state partiel en cas d'erreur. Reconcile : plus de race condition sur le spill-over — pré-calcul des `remaining` en 2 requêtes `groupBy` au lieu de N×2 appels `getRemaining`.
+
+12. **Validation serveur `sum(allocations) ≤ wave.amount`** (2026-04-11) — `PATCH /api/metadata/transactions/:id` vérifie côté backend que la somme des allocations ne dépasse pas le montant du wave. Double le garde-fou frontend (qui peut être contourné via appel API direct). Max 50 personnes par wave.
+
+13. **Unique index `(session_id, transaction_id)` sur `wave_transactions`** (2026-04-11) — Schéma mis à jour + `api/migrations/2026-04-11-wave-txn-unique.sql` à appliquer manuellement sur Neon (CREATE UNIQUE INDEX CONCURRENTLY). Complète la dédup JS dans `import-wave.ts`. `onConflictDoNothing()` ajouté sur les inserts pour ne pas planter si l'index est en place.
+
+14. **Zod `.max(N)` sur tous les champs string** (2026-04-11) — 100/200 caractères selon le champ, amounts plafonnés à 1 milliard FCFA. Évite DoS léger + JSONB bloated côté BDD.
+
+15. **Parser CSV RFC 4180 minimal** (2026-04-11) — `api/src/lib/csv-parser.ts` gère les champs quotés `"..."` et les guillemets échappés `""`. Un counterparty Wave avec une virgule (ex: "SARL Durand, Michel") ne casse plus le parsing.
+
+16. **Système de toast minimal** (2026-04-11) — `web/src/lib/toast.tsx` expose `ToastProvider` + `useToast`. Pas de dépendance externe. Auto-dismiss 2.5s (success/info) ou 4s (error). Branché sur toutes les mutations (chevron wave, cash CRUD, link/unlink, paiement espèces).
+
+17. **Bannière session archivée** (2026-04-11) — Badge "Archivée" dans le titre + bandeau ambré sous le header. Signal visuel fort pour éviter d'éditer une session figée. Le blocage effectif des mutations côté backend/frontend reste à faire si ça devient un problème concret.
+
+18. **Badge "consolidée" sur Section Résumé** (2026-04-11) — Petit pill explicatif sur le titre "Facture par projet et par personne", avec tooltip expliquant que la matrice est optimisée et que les données brutes (chevrons wave, cash_allocations) ne sont pas modifiées. Répond à la confusion "où est ma facture Bocar×CTD ?".
 
 ## Routes API
 
