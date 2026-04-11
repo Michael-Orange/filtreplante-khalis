@@ -348,11 +348,11 @@ export function KhalisDataTab({
 
   return (
     <div className="flex-1 overflow-y-auto">
-      {/* Section 1 — Réglements wave par personne (vue Résumé uniquement) */}
+      {/* Section 1 — Règlements wave par personne (vue Résumé uniquement) */}
       {view === "resume" && (
         <div className="p-4">
           <h3 className="font-heading font-semibold text-gray-900 mb-3">
-            Réglements wave par personne
+            Règlements wave par personne
           </h3>
           <div className="bg-white rounded-xl border border-gray-200 divide-y">
             {Array.from(personTotals.entries())
@@ -378,11 +378,11 @@ export function KhalisDataTab({
         </div>
       )}
 
-      {/* Réglements caisse par personne — liste plate (vue Résumé uniquement) */}
+      {/* Règlements caisse par personne — liste plate (vue Résumé uniquement) */}
       {view === "resume" && cashPersonTotals.size > 0 && (
         <div className="p-4 pt-0">
           <h3 className="font-heading font-semibold text-gray-900 mb-3">
-            Réglements caisse par personne
+            Règlements caisse par personne
           </h3>
           <div className="bg-white rounded-xl border border-gray-200 divide-y">
             {Array.from(cashPersonTotals.entries())
@@ -408,11 +408,11 @@ export function KhalisDataTab({
         </div>
       )}
 
-      {/* Section 2 — Réglements Caisse Fatou par personne (vue Rapprochement Caisse uniquement) */}
+      {/* Section 2 — Règlements Caisse Fatou par personne (vue Rapprochement Caisse uniquement) */}
       {view === "cash-editor" && (
         <div className="p-4">
           <h3 className="font-heading font-semibold text-gray-900 mb-3">
-            Réglements Caisse Fatou par personne
+            Règlements Caisse Fatou par personne
           </h3>
           <div className="space-y-3">
             {cashBlocks.map((block) => (

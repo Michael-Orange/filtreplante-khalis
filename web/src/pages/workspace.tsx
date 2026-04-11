@@ -371,7 +371,7 @@ export function WorkspacePage() {
                 {unreconciledWaves.length > 1 ? "s" : ""} wave non rapproché
                 {unreconciledWaves.length > 1 ? "s" : ""}
                 <span className="text-orange-500 text-xs font-normal ml-1">
-                  (hors RFE)
+                  (hors règlements wave pour factures d'équipe)
                 </span>
               </div>
             )}
