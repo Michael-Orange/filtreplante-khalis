@@ -511,6 +511,11 @@ function WaveLinkPanel({
   const isLinked = links.length > 0;
   const surplus = waveAmount - totalAllocated;
 
+  // Wave flagué RFE (Règlement facture d'équipe) = a des allocations chevron.
+  // Ces waves ne se rapprochent PAS avec les factures fournisseurs classiques —
+  // leur liaison est gérée dans l'onglet "Résumé dépenses" via l'auto-link.
+  const isRFE = !!wave.allocations && wave.allocations.length > 0;
+
   const [pendingInvoiceId, setPendingInvoiceId] = useState<string | null>(null);
 
   const linkMutation = useMutation({
@@ -663,8 +668,40 @@ function WaveLinkPanel({
           </div>
         )}
 
-        {/* Available invoices grouped by supplier */}
-        {!showLinked && (
+        {/* Available invoices grouped by supplier — masqué si wave RFE */}
+        {!showLinked && isRFE && (
+          <div className="px-4 py-4">
+            <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
+              <div className="flex items-start gap-2">
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="16"
+                  height="16"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="text-amber-600 flex-shrink-0 mt-0.5"
+                >
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                  <polyline points="14 2 14 8 20 8" />
+                </svg>
+                <div className="text-sm text-amber-800">
+                  <p className="font-medium">Règlement facture d'équipe</p>
+                  <p className="text-xs text-amber-700 mt-1">
+                    Ce règlement est flaggé "Règlement facture d'équipe" (projet + répartition par personne). La liaison avec les factures d'équipe est calculée automatiquement dans l'onglet <strong>Résumé dépenses</strong>.
+                  </p>
+                  <p className="text-xs text-amber-700 mt-1">
+                    Pour rapprocher ce règlement avec une facture fournisseur classique, retire d'abord sa répartition RFE via le chevron à gauche.
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+        {!showLinked && !isRFE && (
           <div className="px-4 py-3">
             <h4 className="text-xs font-medium text-gray-500 uppercase mb-2">Factures disponibles</h4>
             <p className="text-xs text-gray-400 mb-3">
