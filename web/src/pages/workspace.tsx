@@ -108,11 +108,25 @@ export function WorkspacePage() {
 
   const selectedWave = session?.waveTransactions.find((w) => w.id === selectedWaveId);
 
-  // Unreconciled invoices (neither wave nor cash)
+  // Factures fournisseur sans lien de rapprochement (ni wave ni cash).
+  // Vient de l'app Facture de Fatou via /api/invoices/:sessionId.
   const unreconciledInvoices = useMemo(() => {
     if (!invoices) return [];
     return invoices.filter((inv) => inv.reconStatus === "pending");
   }, [invoices]);
+
+  // Waves non-RFE sans lien de rapprochement. Les RFE (wave avec
+  // allocations chevron) sont exclus : ils ne se lient pas à des
+  // factures fournisseur, leur affectation est gérée par l'auto-link
+  // dans l'onglet Résumé.
+  const unreconciledWaves = useMemo(() => {
+    if (!session) return [];
+    return session.waveTransactions.filter((w) => {
+      const isRFE = !!w.allocations && w.allocations.length > 0;
+      if (isRFE) return false;
+      return !waveToLinks[w.id];
+    });
+  }, [session, waveToLinks]);
 
   // Tous les noms de personnes déjà utilisés dans la session (wave
   // chevrons + cash allocations), dédupliqués. Pour l'autocomplete du
@@ -347,14 +361,29 @@ export function WorkspacePage() {
         </div>
       )}
 
-      {/* Unreconciled invoices alert */}
-      {unreconciledInvoices.length > 0 && dataReady && (
-        <div className="bg-orange-50 border-t border-orange-200 px-4 py-2 flex-shrink-0">
-          <div className="text-orange-700 text-sm font-medium">
-            {unreconciledInvoices.length} facture{unreconciledInvoices.length > 1 ? "s" : ""} non rapprochée{unreconciledInvoices.length > 1 ? "s" : ""}
+      {/* Alerte rapprochement : waves non-RFE non liés + factures fournisseur pending */}
+      {dataReady &&
+        (unreconciledWaves.length > 0 || unreconciledInvoices.length > 0) && (
+          <div className="bg-orange-50 border-t border-orange-200 px-4 py-2 flex-shrink-0 space-y-0.5">
+            {unreconciledWaves.length > 0 && (
+              <div className="text-orange-700 text-sm font-medium">
+                {unreconciledWaves.length} règlement
+                {unreconciledWaves.length > 1 ? "s" : ""} wave non rapproché
+                {unreconciledWaves.length > 1 ? "s" : ""}
+                <span className="text-orange-500 text-xs font-normal ml-1">
+                  (hors RFE)
+                </span>
+              </div>
+            )}
+            {unreconciledInvoices.length > 0 && (
+              <div className="text-orange-700 text-sm font-medium">
+                {unreconciledInvoices.length} facture
+                {unreconciledInvoices.length > 1 ? "s" : ""} fournisseur non
+                rapprochée{unreconciledInvoices.length > 1 ? "s" : ""}
+              </div>
+            )}
           </div>
-        </div>
-      )}
+        )}
 
       {/* Summary bar */}
       {summary && <SummaryBar summary={summary} invoiceCount={invoices?.length || 0} />}
