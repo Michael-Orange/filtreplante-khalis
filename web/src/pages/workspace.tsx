@@ -952,6 +952,155 @@ function SupplierGroup({
   );
 }
 
+// ─── Consolidation des factures d'équipe ────────────────────
+//
+// À totaux par personne ET par projet préservés, rééquilibre la matrice
+// (personne × projet) pour MINIMISER le nombre de cellules non-nulles —
+// donc le nombre de factures d'équipe à générer.
+//
+// Algo : annulation de cycle 4+ sur la plus petite cellule.
+// 1. Trouver la plus petite cellule ayant un cycle dans le graphe biparti
+//    des cellules non-nulles.
+// 2. Pivoter le long du cycle (alternance signes -/+) avec delta = valeur
+//    de la cellule → elle devient 0, les totaux lignes/colonnes sont
+//    préservés.
+// 3. Répéter jusqu'à ce qu'aucune cellule n'ait de cycle (→ forêt biparti,
+//    support minimum atteint).
+//
+// Projets "gelés" (frozenProjects) : leurs cellules ne sont jamais touchées.
+// Utilisé pour exclure "__none__" (waves sans projet) — ces montants doivent
+// rester visibles séparément pour que Fatou leur assigne un projet réel.
+
+const CONSOLIDATE_EPS = 1e-6;
+
+function findCycleThrough(
+  cells: Map<string, Map<string, number>>,
+  startP: string,
+  startPr: string,
+  frozenProjects: Set<string>,
+): Array<[string, string]> | null {
+  // BFS bipartite graph : rows ("P:<person>") + cols ("C:<project>").
+  // Cherche un chemin de "C:startPr" à "P:startP" SANS utiliser l'arête
+  // (startP, startPr) et en évitant toute arête touchant un frozen project.
+  type Node = string;
+  const startNode: Node = `C:${startPr}`;
+  const target: Node = `P:${startP}`;
+
+  const parentNode = new Map<Node, Node>();
+  const parentEdge = new Map<Node, [string, string]>();
+  const visited = new Set<Node>([startNode]);
+  const queue: Node[] = [startNode];
+
+  while (queue.length > 0) {
+    const node = queue.shift()!;
+    const neighbors: Array<{ next: Node; edge: [string, string] }> = [];
+    if (node.startsWith("P:")) {
+      const person = node.slice(2);
+      const row = cells.get(person);
+      if (row) {
+        for (const [pr, v] of row) {
+          if (v <= CONSOLIDATE_EPS) continue;
+          if (frozenProjects.has(pr)) continue;
+          if (person === startP && pr === startPr) continue;
+          neighbors.push({ next: `C:${pr}`, edge: [person, pr] });
+        }
+      }
+    } else {
+      const pr = node.slice(2);
+      if (frozenProjects.has(pr)) continue;
+      for (const [p, row] of cells) {
+        const v = row.get(pr);
+        if (!v || v <= CONSOLIDATE_EPS) continue;
+        if (p === startP && pr === startPr) continue;
+        neighbors.push({ next: `P:${p}`, edge: [p, pr] });
+      }
+    }
+
+    for (const { next, edge } of neighbors) {
+      if (visited.has(next)) continue;
+      visited.add(next);
+      parentNode.set(next, node);
+      parentEdge.set(next, edge);
+      if (next === target) {
+        // Reconstruire le chemin target → startNode, puis inverser
+        const rev: Array<[string, string]> = [];
+        let cur: Node = next;
+        while (parentNode.has(cur)) {
+          rev.push(parentEdge.get(cur)!);
+          cur = parentNode.get(cur)!;
+        }
+        rev.reverse();
+        // Préfixer l'arête directe pour fermer le cycle
+        return [[startP, startPr], ...rev];
+      }
+      queue.push(next);
+    }
+  }
+  return null;
+}
+
+function consolidateFactures(
+  inputCells: Map<string, Map<string, number>>,
+  frozenProjects: Set<string> = new Set(),
+): Map<string, Map<string, number>> {
+  // Clone profond (pas de mutation du caller)
+  const cells = new Map<string, Map<string, number>>();
+  for (const [p, row] of inputCells) {
+    const newRow = new Map<string, number>();
+    for (const [pr, v] of row) {
+      if (v > CONSOLIDATE_EPS) newRow.set(pr, v);
+    }
+    if (newRow.size > 0) cells.set(p, newRow);
+  }
+
+  const MAX_ITER = 10_000;
+  for (let iter = 0; iter < MAX_ITER; iter++) {
+    // Collecter les cellules non-gelées triées par valeur croissante
+    const sorted: Array<{ p: string; pr: string; v: number }> = [];
+    for (const [p, row] of cells) {
+      for (const [pr, v] of row) {
+        if (v > CONSOLIDATE_EPS && !frozenProjects.has(pr)) {
+          sorted.push({ p, pr, v });
+        }
+      }
+    }
+    if (sorted.length === 0) break;
+    sorted.sort((a, b) => a.v - b.v);
+
+    // Chercher la plus petite cellule qui admet un cycle
+    let pivoted = false;
+    for (const { p, pr } of sorted) {
+      const cycle = findCycleThrough(cells, p, pr, frozenProjects);
+      if (!cycle) continue;
+
+      // delta = min des positions "-" (indices pairs) du cycle
+      let delta = Infinity;
+      for (let i = 0; i < cycle.length; i += 2) {
+        const [cp, cpr] = cycle[i];
+        const v = cells.get(cp)?.get(cpr) || 0;
+        if (v < delta) delta = v;
+      }
+      if (delta <= CONSOLIDATE_EPS) continue; // sécurité
+
+      // Appliquer le pivot : signes alternés en partant du - sur cycle[0]
+      for (let i = 0; i < cycle.length; i++) {
+        const [cp, cpr] = cycle[i];
+        const sign = i % 2 === 0 ? -1 : +1;
+        const row = cells.get(cp)!;
+        const newVal = (row.get(cpr) || 0) + sign * delta;
+        if (newVal <= CONSOLIDATE_EPS) row.delete(cpr);
+        else row.set(cpr, newVal);
+        if (row.size === 0) cells.delete(cp);
+      }
+      pivoted = true;
+      break;
+    }
+    if (!pivoted) break; // forêt atteinte → support minimum
+  }
+
+  return cells;
+}
+
 // ─── Auto-link Wave → Facture d'équipe (étape 3) ────────────
 //
 // Algo : chaque wave flagué RFE est auto-lié à UNE personne cible.
@@ -960,11 +1109,11 @@ function SupplierGroup({
 //   2) sinon, 1ère personne du chevron si elle a des factures
 //   3) sinon, 1ère personne arbitraire avec capacité restante
 // Le wave entier est ensuite distribué sur TOUTES les factures de
-// cette personne (chevron + cash), dans l'ordre alphabétique de la
-// clé projet. Waves traités par date croissante pour que la date
-// facture = date du 1er wave lié (priorité #4).
-// Fonction pure — sans side-effect sur React — pour pouvoir la
-// cacher dans un useState et contrôler les recalculs via un bouton.
+// cette personne, dans l'ordre alphabétique de la clé projet. Waves
+// traités par date croissante pour que la date facture = date du 1er
+// wave lié (priorité #4).
+// Prend en entrée la matrice consolidée (person × project), donc le
+// nombre de factures à combler est déjà minimisé.
 type LinkedWaveEntry = {
   waveId: string;
   date: string;
@@ -978,44 +1127,27 @@ type AutoLinksResult = {
 
 function computeAutoLinks(
   wavesWithMeta: WaveTransaction[],
-  cashAllocations: CashAllocation[],
-  projectMap: Map<string, { persons: Map<string, { amount: number }> }>,
+  factureMatrix: Map<string, Map<string, number>>,
 ): AutoLinksResult {
   const linkedByFactureKey = new Map<string, LinkedWaveEntry[]>();
   let totalWaveUnlinked = 0;
 
-  // Construction de l'index des factures par personne.
-  // Inclut les factures issues du chevron ET les factures cash-only.
-  // La capacité d'une facture = chevron amount + cash amount (total
-  // affiché en section 3). Un wave peut remplir jusqu'à cette capacité.
-  const factureTotal = new Map<string, { personName: string; amount: number }>();
-  for (const [pid, g] of projectMap) {
-    for (const [personName, entry] of g.persons) {
-      const factureKey = `${pid}|${personName}`;
-      factureTotal.set(factureKey, { personName, amount: entry.amount });
-    }
-  }
-  for (const c of cashAllocations) {
-    const factureKey = `${c.projectId}|${c.personName}`;
-    if (factureTotal.has(factureKey)) {
-      factureTotal.get(factureKey)!.amount += Number(c.amount);
-    } else {
-      factureTotal.set(factureKey, {
-        personName: c.personName,
-        amount: Number(c.amount),
-      });
-    }
-  }
-
+  // Construction de l'index des factures par personne depuis la matrice
+  // consolidée. La capacité d'une facture = valeur de la cellule (person,
+  // project) dans la matrice. Un wave peut remplir jusqu'à cette capacité.
   const personFactureIndex = new Map<
     string,
     Array<{ factureKey: string; remaining: number }>
   >();
-  for (const [factureKey, { personName, amount }] of factureTotal) {
-    if (!personFactureIndex.has(personName)) {
-      personFactureIndex.set(personName, []);
+  for (const [personName, row] of factureMatrix) {
+    for (const [projectId, amount] of row) {
+      if (amount <= 0) continue;
+      const factureKey = `${projectId}|${personName}`;
+      if (!personFactureIndex.has(personName)) {
+        personFactureIndex.set(personName, []);
+      }
+      personFactureIndex.get(personName)!.push({ factureKey, remaining: amount });
     }
-    personFactureIndex.get(personName)!.push({ factureKey, remaining: amount });
   }
 
   const linkToFacture = (
@@ -1329,6 +1461,43 @@ function KhalisDataTab({
     ]),
   );
 
+  // ─── Matrice brute person × projet (wave + cash) ─────────────
+  // Sert d'entrée à la consolidation. "__none__" est inclus mais gelé
+  // (ses cellules ne bougent pas) pour que Fatou garde ses waves sans
+  // projet visibles en tant que rappel.
+  const rawCells = new Map<string, Map<string, number>>();
+  for (const [pid, g] of projectMap) {
+    for (const [personName, entry] of g.persons) {
+      if (!rawCells.has(personName)) rawCells.set(personName, new Map());
+      const row = rawCells.get(personName)!;
+      row.set(pid, (row.get(pid) || 0) + entry.amount);
+    }
+  }
+  for (const c of cashAllocations) {
+    if (!rawCells.has(c.personName)) rawCells.set(c.personName, new Map());
+    const row = rawCells.get(c.personName)!;
+    row.set(c.projectId, (row.get(c.projectId) || 0) + Number(c.amount));
+  }
+
+  // Lookup nom de projet par id (pour l'affichage)
+  const projectNameById = new Map<string, string>();
+  for (const [pid, g] of projectMap) projectNameById.set(pid, g.projectName);
+  for (const c of cashAllocations) {
+    if (!projectNameById.has(c.projectId)) {
+      projectNameById.set(
+        c.projectId,
+        projects?.find((p) => p.id === c.projectId)?.name || "Projet inconnu",
+      );
+    }
+  }
+
+  // Consolide la matrice pour minimiser le nombre de factures à générer
+  // (cf. consolidateFactures). "__none__" est gelé → ses cellules restent.
+  const factureMatrix = consolidateFactures(
+    rawCells,
+    new Set(["__none__"]),
+  );
+
   // ─── Étape 3 — Liaisons wave → facture d'équipe ──────────────
   // Compute inline a chaque render. Simple et garanti toujours frais.
   // Le bouton "Recalculer" force juste un re-render (utile en UX mais
@@ -1336,82 +1505,53 @@ function KhalisDataTab({
   const [, forceRerender] = useState(0);
   const { linkedByFactureKey, totalWaveUnlinked } = computeAutoLinks(
     wavesWithMeta,
-    cashAllocations,
-    projectMap,
+    factureMatrix,
   );
 
   const handleRefreshLinks = () => {
     forceRerender((v) => v + 1);
   };
 
-  // ─── Merged project map (wave + cash) for section 3 ─────────
+  // ─── Merged project map pour la section 3 ─────────────────────
+  // Construit depuis la matrice consolidée : chaque cellule non-nulle
+  // est une facture d'équipe à générer. Les détails wave/caisse par
+  // cellule disparaissent (le breakdown existe au niveau global via
+  // le bandeau récap).
   type MergedPerson = {
-    wave: number;
-    caisse: number;
+    total: number;
     linkedWaves: LinkedWaveEntry[];
     factureDate: string | null; // min des dates des waves auto-liés
   };
   const mergedProjectMap = new Map<string, {
     projectName: string;
     persons: Map<string, MergedPerson>;
-    waveTotal: number;
-    cashTotal: number;
-    waveCount: number;
+    projectTotal: number;
   }>();
 
-  for (const [pid, g] of projectMap) {
-    const persons = new Map<string, MergedPerson>();
-    for (const [name, entry] of g.persons) {
-      const factureKey = `${pid}|${name}`;
+  for (const [personName, row] of factureMatrix) {
+    for (const [projectId, amount] of row) {
+      if (amount <= 0) continue;
+      if (!mergedProjectMap.has(projectId)) {
+        mergedProjectMap.set(projectId, {
+          projectName: projectNameById.get(projectId) || "Projet inconnu",
+          persons: new Map(),
+          projectTotal: 0,
+        });
+      }
+      const entry = mergedProjectMap.get(projectId)!;
+      const factureKey = `${projectId}|${personName}`;
       const linked = linkedByFactureKey.get(factureKey) || [];
       const factureDate = linked.reduce<string | null>(
         (min, w) => (min === null || w.date < min ? w.date : min),
         null,
       );
-      persons.set(name, {
-        wave: entry.amount,
-        caisse: 0,
+      entry.persons.set(personName, {
+        total: amount,
         linkedWaves: linked,
         factureDate,
       });
+      entry.projectTotal += amount;
     }
-    mergedProjectMap.set(pid, {
-      projectName: g.projectName,
-      persons,
-      waveTotal: g.totalAmount,
-      cashTotal: 0,
-      waveCount: g.waveIds.size,
-    });
-  }
-
-  // Add cash allocations
-  for (const c of cashAllocations) {
-    const pid = c.projectId;
-    if (!mergedProjectMap.has(pid)) {
-      mergedProjectMap.set(pid, {
-        projectName: projects?.find((p) => p.id === pid)?.name || "Projet inconnu",
-        persons: new Map(),
-        waveTotal: 0,
-        cashTotal: 0,
-        waveCount: 0,
-      });
-    }
-    const entry = mergedProjectMap.get(pid)!;
-    const factureKey = `${pid}|${c.personName}`;
-    const linkedForThis = linkedByFactureKey.get(factureKey) || [];
-    const factureDateForThis = linkedForThis.reduce<string | null>(
-      (min, w) => (min === null || w.date < min ? w.date : min),
-      null,
-    );
-    const existing = entry.persons.get(c.personName) || {
-      wave: 0,
-      caisse: 0,
-      linkedWaves: linkedForThis,
-      factureDate: factureDateForThis,
-    };
-    existing.caisse += Number(c.amount);
-    entry.persons.set(c.personName, existing);
-    entry.cashTotal += Number(c.amount);
   }
 
   if (wavesWithMeta.length === 0 && cashAllocations.length === 0) {
@@ -1547,7 +1687,7 @@ function KhalisDataTab({
             0,
           );
           const totalFactures = Array.from(mergedProjectMap.values()).reduce(
-            (s, g) => s + g.waveTotal + g.cashTotal,
+            (s, g) => s + g.projectTotal,
             0,
           );
           const sumRFE = totalWaveRFE + totalCashRFE;
@@ -1646,7 +1786,7 @@ function KhalisDataTab({
         </div>
         <div className="space-y-3">
           {Array.from(mergedProjectMap.entries()).map(([projId, group]) => {
-            const projectTotal = group.waveTotal + group.cashTotal;
+            const projectTotal = group.projectTotal;
             return (
               <div key={projId} className="bg-white rounded-xl border border-gray-200">
                 <div className="px-4 py-3 border-b bg-gray-50 rounded-t-xl flex items-center justify-between">
@@ -1662,7 +1802,7 @@ function KhalisDataTab({
                     .map(([name, amounts]) => ({
                       name,
                       amounts,
-                      total: amounts.wave + amounts.caisse,
+                      total: amounts.total,
                     }))
                     .sort((a, b) => b.total - a.total)
                     .map(({ name, amounts, total }) => {
