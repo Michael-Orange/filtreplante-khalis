@@ -241,16 +241,18 @@ Si **aucun** candidat n'a une capacité ≥ wave.amount, le wave entier est marq
 
     **Algorithme** (`api/src/routes/auto-match.ts`) :
     - **Filtrage waves** : on ignore les waves flaggés RFE (`projectId` non-null OU `allocations` non-vide) et les waves déjà partiellement liés dans la session courante. On traite le reste par ordre `transactionDate` ASC.
-    - **Pool A** — lignes `facture.payments` avec `paymentType ILIKE '%Wave%'` dont la facture parente est Fatou, non-archivée, `invoiceType='supplier_invoice'`.
-    - **Pool B** — factures `invoiceType='expense'` de Fatou dont `invoice.paymentType ILIKE '%Wave%'` (pas de ligne `payments`, le règlement est porté par la facture elle-même).
+    - **Pool A** — lignes `facture.payments` avec `paymentType ILIKE '%Wave%'` dont la facture parente est Fatou, non-archivée, `invoiceType='supplier_invoice'`. Utilise un `sql\`\${col} ILIKE '%Wave%'\`` brut plutôt que l'opérateur `ilike()` de Drizzle (ce dernier se comporte de manière inattendue avec `neon-serverless` et laisse le pool vide).
+    - **Pool B** — factures `invoiceType='expense'` de Fatou dont `invoice.paymentType ILIKE '%Wave%'` (pas de ligne `payments`, le règlement est porté par la facture elle-même). Même traitement `sql` brut.
     - **Période** : `[session.dateStart − 1j, session.dateEnd + 1j]` pour absorber les écarts en bord de session. Pool A filtre sur `payments.paymentDate`, Pool B sur `invoices.invoiceDate`.
-    - **Multiset consommé** : pour éviter qu'une ligne déjà rapprochée (même dans une session antérieure) soit reprise, on charge TOUS les `reconciliation_links` existants (toutes sessions confondues) pour les invoices candidates et on soustrait un multiset par `invoiceId`. Soustraction `|v1 − v2| ≤ 0.01`. Pool A trié par `paymentDate` ASC pour un résultat déterministe.
+    - **Multiset consommé (scope session courante uniquement)** : pour éviter qu'une ligne déjà rapprochée manuellement **dans cette session** soit reprise, on charge les `reconciliation_links` avec `sessionId = currentSessionId AND waveTransactionId IS NOT NULL` pour les invoices candidates et on soustrait un multiset par `invoiceId`. Soustraction `|v1 − v2| ≤ 0.01`. Pool A trié par `paymentDate` ASC pour un résultat déterministe. **Les autres sessions sont ignorées** — chaque session est autonome, un ancien lien orphelin (session archivée/supprimée) ne doit pas bloquer l'auto-match d'une nouvelle session. Bug historique : un premier jet regardait toutes les sessions, ce qui faisait retourner 0 match dans toute session nouvelle contenant des factures déjà rapprochées ailleurs.
     - **Matching** : pour chaque wave W, candidats = `{c ∈ poolA ∪ poolB disponibles : |c.amount − W.amount| ≤ 0.01 ET |c.date − W.transactionDate| ≤ 1j}`. 0 candidat → `unmatched`, 1 candidat → `matched` (lien créé, candidat consommé dans le run), ≥2 candidats → `ambiguous` (laissé manuel).
     - **Insertion atomique** : tous les liens dans un seul `db.transaction()`.
 
     **Idempotent** : re-cliquer exclut les waves déjà liés à l'étape 1. Fatou peut cliquer plusieurs fois sans risque de doublons.
 
     **Déclenchement UI** : bouton dans `pages/workspace.tsx` (barre de filtres de l'onglet Rapprochement Wave). La mutation invalide `["allLinks", sessionId]`, `["invoices", sessionId]`, `["summary", sessionId]` au succès. Toast récapitulatif : `N rapprochés · M ambigus · K sans candidat`.
+
+    **Diagnostic dans la réponse** : la réponse JSON contient un champ `diag` (tailles des pools A/B, compteurs multiset, échantillon des candidats disponibles, bornes de période). Utile pour debugger rapidement via F12 → Network quand un match attendu ne se fait pas. Peut être retiré si jugé inutile, aucune logique métier ne s'en sert.
 
     **Cas non couverts volontairement** :
     - Waves avec liens partiels préexistants (rare, on laisse Fatou finir).
