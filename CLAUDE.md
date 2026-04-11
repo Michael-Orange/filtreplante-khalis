@@ -111,10 +111,13 @@ Algorithme **pure function** `computeAutoLinks(wavesWithMeta, cashAllocations, p
 
 **Principe** : chaque wave flagué RFE est auto-lié à **UNE personne cible**. Le wave entier (montant total) est distribué sur les factures de cette personne.
 
-**Résolution de la personne cible (cascade)** :
-1. **Counterparty startsWith match** : le premier token de `counterpartyName` (ex: "Mamadou Diop" → "Mamadou") est comparé `startsWith` case-insensitive aux noms dans `personFactureIndex`. Premier match gagnant.
+**Résolution de la personne cible (cascade avec contrainte de capacité)** :
+La cascade construit une liste de candidats dans l'ordre de priorité, puis retient le **premier** dont la capacité restante (somme des `remaining` de ses factures) est **≥ au montant du wave**. Un RFE ne peut pas être attribué à une personne dont le total factures < au montant du wave (règle métier stricte).
+1. **Counterparty startsWith match** : le premier token de `counterpartyName` (ex: "Mamadou Diop" → "Mamadou") est comparé `startsWith` case-insensitive aux noms dans `personFactureIndex`. Premier match.
 2. **1ère personne du chevron** : si `allocations[0].name` est dans l'index.
-3. **Arbitraire** : première personne avec capacité restante.
+3. **Toutes les autres personnes** dans l'ordre alphabétique (scan de `personFactureIndex.keys()`).
+
+Si **aucun** candidat n'a une capacité ≥ wave.amount, le wave entier est marqué `totalWaveUnlinked` (warning orange dans le bandeau récap). Exemple concret : wave 54k avec counterparty "Cheikh", Cheikh a 30k de factures → capacité insuffisante, on tente chevron[0] (peut-être aussi Cheikh ou Ibrahima 10k → insuffisant), puis on cherche le premier dans l'index avec ≥ 54k (ex: Mamadou 300k) → attribué à Mamadou.
 
 **Construction de `personFactureIndex`** : inclut **toutes** les factures d'équipe visibles en section 3, chevron + cash-only. La capacité = `facture_total` (chevron amount + cash amount).
 

@@ -996,40 +996,62 @@ function computeAutoLinks(
     .slice()
     .sort((a, b) => a.transactionDate.localeCompare(b.transactionDate));
 
+  const capacityOf = (personName: string): number => {
+    const factures = personFactureIndex.get(personName);
+    if (!factures) return 0;
+    return factures.reduce((sum, f) => sum + f.remaining, 0);
+  };
+
   for (const wave of sortedWaves) {
-    // Résolution personne cible
-    let targetPerson: string | null = null;
+    const waveAmount = Number(wave.amount);
+
+    // Construction de la cascade de candidats dans l'ordre de priorité :
+    //   1) counterparty startsWith match
+    //   2) 1ère personne du chevron
+    //   3) toutes les autres personnes (ordre alpha)
+    // On retient le PREMIER candidat dont la capacité restante est
+    // >= wave.amount. Règle métier : un RFE ne peut pas être attribué
+    // à une personne dont le total facture < au montant du wave.
+    const candidates: string[] = [];
 
     if (wave.counterpartyName) {
       const firstToken = wave.counterpartyName.trim().split(/\s+/)[0] || "";
       if (firstToken.length >= 2) {
         for (const personName of personFactureIndex.keys()) {
           if (personName.toLowerCase().startsWith(firstToken.toLowerCase())) {
-            targetPerson = personName;
+            if (!candidates.includes(personName)) candidates.push(personName);
             break;
           }
         }
       }
     }
 
-    if (!targetPerson && wave.allocations && wave.allocations[0]) {
+    if (wave.allocations && wave.allocations[0]) {
       const firstChev = wave.allocations[0].name;
-      if (personFactureIndex.has(firstChev)) {
-        targetPerson = firstChev;
+      if (
+        personFactureIndex.has(firstChev) &&
+        !candidates.includes(firstChev)
+      ) {
+        candidates.push(firstChev);
+      }
+    }
+
+    for (const personName of personFactureIndex.keys()) {
+      if (!candidates.includes(personName)) candidates.push(personName);
+    }
+
+    let targetPerson: string | null = null;
+    for (const candidate of candidates) {
+      if (capacityOf(candidate) >= waveAmount) {
+        targetPerson = candidate;
+        break;
       }
     }
 
     if (!targetPerson) {
-      for (const [personName, factures] of personFactureIndex) {
-        if (factures.some((f) => f.remaining > 0)) {
-          targetPerson = personName;
-          break;
-        }
-      }
-    }
-
-    if (!targetPerson) {
-      totalWaveUnlinked += Number(wave.amount);
+      // Aucune personne n'a une capacité suffisante pour absorber ce
+      // wave entier → non lié (signalé dans le bandeau récap)
+      totalWaveUnlinked += waveAmount;
       continue;
     }
 
@@ -1038,7 +1060,7 @@ function computeAutoLinks(
       .slice()
       .sort((a, b) => a.factureKey.localeCompare(b.factureKey));
 
-    let waveRemaining = Number(wave.amount);
+    let waveRemaining = waveAmount;
     for (const f of ordered) {
       if (waveRemaining <= 0) break;
       const linked = linkToFacture(f.factureKey, wave, waveRemaining);
