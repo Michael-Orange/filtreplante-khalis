@@ -49,6 +49,13 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
 export { ApiError };
 
+/** Extrait un message d'erreur lisible depuis n'importe quelle erreur. */
+export function getErrorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === "string") return err;
+  return "Erreur inconnue";
+}
+
 export const api = {
   get: <T>(path: string) => request<T>(path),
   post: <T>(path: string, body?: any) =>
