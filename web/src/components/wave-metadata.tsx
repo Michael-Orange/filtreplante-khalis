@@ -96,6 +96,15 @@ export function WaveMetadata({
     });
   };
 
+  const handleClearRFE = () => {
+    if (!confirm("Retirer le projet et la répartition de ce règlement ? Il redeviendra disponible pour rapprochement fournisseur.")) return;
+    setProjectId("");
+    setAllocations([]);
+    saveMutation.mutate({ projectId: null, allocations: [] });
+  };
+
+  const isFlaggedRFE = !!currentProjectId || currentAllocations.length > 0;
+
   const addPerson = (name: string) => {
     if (allocations.some((a) => a.name === name)) return;
     setAllocations([...allocations, { name, amount: 0 }]);
@@ -154,13 +163,25 @@ export function WaveMetadata({
     <div className="border-t border-l-4 border-l-blue-400 border-t-gray-200 bg-gradient-to-r from-blue-50/50 to-white">
       <div className="px-4 py-3 space-y-4">
         {/* Header */}
-        <div className="flex items-center gap-2">
-          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-blue-500">
-            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
-          </svg>
-          <span className="text-xs font-semibold text-blue-700 uppercase tracking-wide">
-            Détails de la dépense
-          </span>
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-blue-500">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>
+            </svg>
+            <span className="text-xs font-semibold text-blue-700 uppercase tracking-wide">
+              Détails de la dépense
+            </span>
+          </div>
+          {isFlaggedRFE && (
+            <button
+              onClick={handleClearRFE}
+              disabled={saveMutation.isPending}
+              className="text-xs text-red-500 hover:text-red-700 font-medium disabled:opacity-50 whitespace-nowrap"
+              title="Retire le projet et la répartition. Le règlement redeviendra disponible pour rapprochement fournisseur."
+            >
+              Annuler RFE
+            </button>
+          )}
         </div>
 
         {/* Project — exclude projets terminés mais garder celui déjà sélectionné */}
