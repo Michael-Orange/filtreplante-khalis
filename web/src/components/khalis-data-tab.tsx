@@ -643,7 +643,11 @@ export function KhalisDataTab({
                                         Net {formatCFA(total)}
                                       </>
                                     ) : (
-                                      <>Net {formatCFA(total)}</>
+                                      <>
+                                        Pas de BRS car &lt; 25 000
+                                        <span className="text-gray-300 mx-1">·</span>
+                                        Net {formatCFA(total)}
+                                      </>
                                     )}
                                   </span>
                                 </div>
